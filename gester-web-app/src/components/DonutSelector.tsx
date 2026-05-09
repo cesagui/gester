@@ -1,12 +1,40 @@
 import React from 'react';
 import TiltTelemetry from './TiltTelemetry';
 import MotionGraph from './MotionGraph';
+import { tiltStore } from '../lib/tiltStore';
+
+const TILT_DEADZONE_DEG = 8;
 
 export default function DonutSelector() {
   const [hoveredSection, setHoveredSection] = React.useState<number | null>(null);
   const [selectedSection, setSelectedSection] = React.useState<number | null>(null);
   const [showRectangle, setShowRectangle] = React.useState(false);
   const [hoveredChar, setHoveredChar] = React.useState<number | null>(null);
+
+  const showRectangleRef = React.useRef(showRectangle);
+  React.useEffect(() => {
+    showRectangleRef.current = showRectangle;
+  }, [showRectangle]);
+
+  const lastTiltSectionRef = React.useRef<number | null>(null);
+  React.useEffect(() => {
+    return tiltStore.subscribe((reading) => {
+      if (showRectangleRef.current) return;
+
+      const tiltMag = Math.hypot(reading.pitch, reading.roll);
+      let next: number | null = null;
+      if (tiltMag >= TILT_DEADZONE_DEG) {
+        let angleDeg = (Math.atan2(reading.roll, reading.pitch) * 180) / Math.PI;
+        if (angleDeg < 0) angleDeg += 360;
+        next = Math.floor(angleDeg / 45) % 8;
+      }
+
+      if (next !== lastTiltSectionRef.current) {
+        lastTiltSectionRef.current = next;
+        setHoveredSection(next);
+      }
+    });
+  }, []);
 
   const sections = [
     { letters: 'ETA', gradient: 'url(#gradient0)' },

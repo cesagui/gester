@@ -1,4 +1,5 @@
 import React from 'react';
+import TiltTelemetry from './TiltTelemetry';
 
 export default function DonutSelector() {
   const [hoveredSection, setHoveredSection] = React.useState<number | null>(null);
@@ -97,6 +98,7 @@ export default function DonutSelector() {
 
   return (
     <div className="min-h-screen w-full flex flex-col items-center justify-center bg-linear-to-br from-slate-900 via-slate-800 to-slate-900 relative">
+      <TiltTelemetry />
       <svg
         width="500"
         height="500"

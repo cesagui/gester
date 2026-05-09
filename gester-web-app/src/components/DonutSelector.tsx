@@ -96,9 +96,36 @@ export default function DonutSelector() {
     setHoveredSection(null);
   };
 
+  // Use pitch-based selection instead of mouse hover
+  const usePitchSelection = true;
+
+  const handleTelemetryReading = (r: { pitch: number | null; roll: number | null; magnitude: number | null }) => {
+    if (!usePitchSelection) return;
+    if (showRectangle) return; // ignore when rectangle view is shown
+
+    const pitch = r.pitch;
+    if (pitch === null || Number.isNaN(pitch)) {
+      setHoveredSection(null);
+      return;
+    }
+
+    // Only select when pitch is within [-80, 80]
+    if (pitch < 0 || pitch > 90) {
+      setHoveredSection(null);
+      return;
+    }
+
+    const clamped = Math.max(0, Math.min(80, pitch));
+    const normalized = (clamped + 80) / 160; // 0..1
+    let index = Math.floor(normalized * sections.length);
+    if (index < 0) index = 0;
+    if (index >= sections.length) index = sections.length - 1;
+    setHoveredSection(index);
+  };
+
   return (
     <div className="min-h-screen w-full flex flex-col items-center justify-center bg-linear-to-br from-slate-900 via-slate-800 to-slate-900 relative">
-      <TiltTelemetry />
+      <TiltTelemetry onReading={handleTelemetryReading} />
       <svg
         width="500"
         height="500"
@@ -131,8 +158,8 @@ export default function DonutSelector() {
           return (
             <g
               key={index}
-              onMouseEnter={() => !showRectangle && setHoveredSection(index)}
-              onMouseLeave={() => !showRectangle && setHoveredSection(null)}
+              onMouseEnter={() => !usePitchSelection && !showRectangle && setHoveredSection(index)}
+              onMouseLeave={() => !usePitchSelection && !showRectangle && setHoveredSection(null)}
               onClick={() => handleSectionClick(index)}
               className="cursor-pointer"
             >

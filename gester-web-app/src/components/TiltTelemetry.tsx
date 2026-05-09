@@ -7,6 +7,9 @@ type TiltReading = {
   magnitude: number | null;
 };
 
+type TiltTelemetryProps = {
+  onReading?: (r: TiltReading) => void;
+};
 function parseTiltPacket(packet: TiltPacket): TiltReading {
   if (packet === null) {
     return { pitch: null, roll: null, magnitude: null };
@@ -27,7 +30,7 @@ function formatValue(value: number | null) {
   return value.toFixed(2);
 }
 
-export default function TiltTelemetry() {
+export default function TiltTelemetry({ onReading }: TiltTelemetryProps) {
   const [isConnecting, setIsConnecting] = React.useState(false);
   const [isConnected, setIsConnected] = React.useState(false);
   const [error, setError] = React.useState<string | null>(null);
@@ -47,7 +50,9 @@ export default function TiltTelemetry() {
 
       const client = clientRef.current;
       client.onTilt = (packet: TiltPacket) => {
-        setReading(parseTiltPacket(packet));
+        const r = parseTiltPacket(packet);
+        setReading(r);
+        if (typeof onReading === 'function') onReading(r);
       };
       client.onDisconnect = () => {
         setIsConnected(false);

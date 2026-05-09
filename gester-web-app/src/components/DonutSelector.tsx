@@ -3,7 +3,7 @@ import TiltTelemetry from './TiltTelemetry';
 import MotionGraph from './MotionGraph';
 import { tiltStore } from '../lib/tiltStore';
 
-const TILT_DEADZONE_DEG = 8;
+const TILT_DEADZONE_DEG = 0;
 
 export default function DonutSelector() {
   const [hoveredSection, setHoveredSection] = React.useState<number | null>(null);
@@ -21,12 +21,30 @@ export default function DonutSelector() {
     return tiltStore.subscribe((reading) => {
       if (showRectangleRef.current) return;
 
-      const tiltMag = Math.hypot(reading.pitch, reading.roll);
+      // Ignore very small pitch values to avoid accidental selection
+      const tiltMag = Math.abs(reading.pitch);
+      if (tiltMag < TILT_DEADZONE_DEG) {
+        if (lastTiltSectionRef.current !== null) {
+          lastTiltSectionRef.current = null;
+          setHoveredSection(null);
+        }
+        return;
+      }
+
+      // Map pitch in the range [0, 90] degrees evenly to the available sections.
+      // If pitch is outside this range, don't select any section.
       let next: number | null = null;
-      if (tiltMag >= TILT_DEADZONE_DEG) {
-        let angleDeg = (Math.atan2(reading.roll, reading.pitch) * 180) / Math.PI;
-        if (angleDeg < 0) angleDeg += 360;
-        next = Math.floor(angleDeg / 45) % 8;
+      const pitch = reading.pitch;
+      const bins = sections.length;
+
+      if (typeof pitch === 'number') {
+        // Wrap pitch into the 0..90 range so values outside loop around.
+        let normalized = pitch % 90;
+        if (normalized < 0) normalized += 90;
+
+        const ratio = normalized / 90;
+        next = Math.floor(ratio * bins);
+        if (next >= bins) next = bins - 1;
       }
 
       if (next !== lastTiltSectionRef.current) {

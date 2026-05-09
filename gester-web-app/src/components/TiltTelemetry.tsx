@@ -1,5 +1,6 @@
 import React from 'react';
 import { BluetoothTiltClient, type TiltPacket } from '../lib/BluetoothTiltClient';
+import { tiltStore } from '../lib/tiltStore';
 
 type TiltReading = {
   pitch: number | null;
@@ -47,7 +48,19 @@ export default function TiltTelemetry() {
 
       const client = clientRef.current;
       client.onTilt = (packet: TiltPacket) => {
-        setReading(parseTiltPacket(packet));
+        const next = parseTiltPacket(packet);
+        setReading(next);
+        if (
+          next.pitch !== null &&
+          next.roll !== null &&
+          next.magnitude !== null
+        ) {
+          tiltStore.publish({
+            pitch: next.pitch,
+            roll: next.roll,
+            magnitude: next.magnitude,
+          });
+        }
       };
       client.onDisconnect = () => {
         setIsConnected(false);

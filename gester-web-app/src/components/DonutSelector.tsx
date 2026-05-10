@@ -3,7 +3,6 @@ import { FaBackspace } from 'react-icons/fa';
 import { IoIosCloseCircle } from 'react-icons/io';
 import { TbNumber123, TbAbc } from 'react-icons/tb';
 import { MdSpaceBar } from 'react-icons/md';
-import TiltTelemetry from './TiltTelemetry';
 import MotionGraph from './MotionGraph';
 import { tiltStore } from '../lib/tiltStore';
 
@@ -30,6 +29,42 @@ const MENU_ENTER_HOLD_MS = 2000;
 const MENU_EXIT_HOLD_MS = 1500; // hold duration to trigger "back" when in nested rectangle
 const MENU_EXIT_HYSTERESIS_DEG = 8; // small hysteresis to avoid jitter canceling the hold
 const MENU_BUTTONS = ['1', '2', '3'];
+
+// Suggestion menu (right side) — mirrors the left menu but for Claude word completions
+const SUGGEST_SLOT_COUNT = 3;
+const COMPLETIONS_ENDPOINT = 'http://localhost:3000/complete';
+const COMPLETIONS_DEBOUNCE_MS = 250;
+
+async function fetchCompletions(buffer: string, signal: AbortSignal): Promise<string[]> {
+  const res = await fetch(COMPLETIONS_ENDPOINT, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ buffer, context: [] }),
+    signal,
+  });
+  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  const sseText = await res.text();
+  const events = sseText.split(/\r?\n\r?\n/);
+  let textAcc = '';
+  for (const evt of events) {
+    if (!evt.trim()) continue;
+    const lines = evt.split(/\r?\n/);
+    let isError = false;
+    let isDone = false;
+    const dataLines: string[] = [];
+    for (const line of lines) {
+      if (line.startsWith('event: error')) isError = true;
+      else if (line.startsWith('event: done')) isDone = true;
+      else if (line.startsWith('data:')) {
+        dataLines.push(line.startsWith('data: ') ? line.slice(6) : line.slice(5));
+      }
+    }
+    if (isError) throw new Error(dataLines.join('\n'));
+    if (isDone) break;
+    textAcc += dataLines.join('\n');
+  }
+  return textAcc.split(/\r?\n/).map((l) => l.trim()).filter(Boolean).slice(0, SUGGEST_SLOT_COUNT);
+}
 
 // Section "anchor" (lock current section after holding this long)
 const ANCHOR_DELAY_MS = 500;
@@ -116,6 +151,9 @@ export default function DonutSelector() {
   const [currentRoll, setCurrentRoll] = React.useState(0);
   const [isSpaceAnchored, setIsSpaceAnchored] = React.useState(false);
   const [isNumberMode, setIsNumberMode] = React.useState(false);
+  const [isSuggestMode, setIsSuggestMode] = React.useState(false);
+  const [suggestions, setSuggestions] = React.useState<string[]>([]);
+  const [hoveredSuggestion, setHoveredSuggestion] = React.useState<number | null>(null);
 
   const showRectangleRef = React.useRef(showRectangle);
   React.useEffect(() => {
@@ -136,6 +174,20 @@ export default function DonutSelector() {
   React.useEffect(() => {
     menuModeRef.current = isMenuMode;
   }, [isMenuMode]);
+
+  const suggestModeRef = React.useRef(isSuggestMode);
+  React.useEffect(() => {
+    suggestModeRef.current = isSuggestMode;
+  }, [isSuggestMode]);
+
+  const suggestionsRef = React.useRef<string[]>(suggestions);
+  React.useEffect(() => {
+    suggestionsRef.current = suggestions;
+  }, [suggestions]);
+
+  const suggestEnterTimerRef = React.useRef<ReturnType<typeof setTimeout> | null>(null);
+  const completionsAbortRef = React.useRef<AbortController | null>(null);
+  const completionsDebounceRef = React.useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const isNumberModeRef = React.useRef(isNumberMode);
   React.useEffect(() => {
@@ -242,6 +294,54 @@ export default function DonutSelector() {
     }
   };
 
+  const enterSuggestMode = () => {
+    if (suggestModeRef.current) return;
+    setIsSuggestMode(true);
+    setHoveredSuggestion(0);
+
+    setShowRectangle(false);
+    setSelectedSection(null);
+    setHoveredSection(null);
+    setHoveredChar(null);
+    setActiveGroupStack([]);
+
+    anchoredSectionRef.current = null;
+    setAnchoredSection(null);
+    setIsSpaceAnchored(false);
+    sectionStableTimeRef.current = null;
+    if (anchorTimerRef.current) {
+      clearTimeout(anchorTimerRef.current);
+      anchorTimerRef.current = null;
+    }
+    anchoredCharRef.current = null;
+    setAnchoredChar(null);
+    if (charAnchorTimerRef.current) {
+      clearTimeout(charAnchorTimerRef.current);
+      charAnchorTimerRef.current = null;
+    }
+    lastCharIdxRef.current = null;
+
+    if (suggestEnterTimerRef.current) {
+      clearTimeout(suggestEnterTimerRef.current);
+      suggestEnterTimerRef.current = null;
+    }
+  };
+
+  const exitSuggestMode = () => {
+    if (!suggestModeRef.current) return;
+    setIsSuggestMode(false);
+    setHoveredSuggestion(null);
+    if (suggestEnterTimerRef.current) {
+      clearTimeout(suggestEnterTimerRef.current);
+      suggestEnterTimerRef.current = null;
+    }
+  };
+
+  const applySuggestion = (word: string) => {
+    if (!word) return;
+    setTypedText((prev) => prev.replace(/\S*$/, '') + word + ' ');
+  };
+
   const handleBackspace = () => {
     setTypedText((prev) => prev.slice(0, -1));
   };
@@ -281,7 +381,7 @@ export default function DonutSelector() {
       setCurrentRoll(rollVisualRef.current);
 
       // Hold positive roll for 2s to enter menu mode (wheel stage only).
-      if (!menuModeRef.current && !showRectangleRef.current) {
+      if (!menuModeRef.current && !suggestModeRef.current && !showRectangleRef.current) {
         if (filteredRoll >= MENU_ENTER_ROLL_THRESHOLD) {
           if (!menuEnterTimerRef.current) {
             menuEnterTimerRef.current = setTimeout(() => {
@@ -295,6 +395,23 @@ export default function DonutSelector() {
       } else if (menuEnterTimerRef.current) {
         clearTimeout(menuEnterTimerRef.current);
         menuEnterTimerRef.current = null;
+      }
+
+      // Hold negative roll for 2s at top level to enter suggest mode (right menu).
+      if (!menuModeRef.current && !suggestModeRef.current && !showRectangleRef.current) {
+        if (filteredRoll <= MENU_EXIT_ROLL_THRESHOLD) {
+          if (!suggestEnterTimerRef.current) {
+            suggestEnterTimerRef.current = setTimeout(() => {
+              enterSuggestMode();
+            }, MENU_ENTER_HOLD_MS);
+          }
+        } else if (suggestEnterTimerRef.current) {
+          clearTimeout(suggestEnterTimerRef.current);
+          suggestEnterTimerRef.current = null;
+        }
+      } else if (suggestEnterTimerRef.current) {
+        clearTimeout(suggestEnterTimerRef.current);
+        suggestEnterTimerRef.current = null;
       }
 
       // Back-hold while in rectangle: hold negative roll to go back one level or exit.
@@ -323,6 +440,30 @@ export default function DonutSelector() {
       } else if (backHoldTimerRef.current) {
         clearTimeout(backHoldTimerRef.current);
         backHoldTimerRef.current = null;
+      }
+
+      // Suggest mode: pitch chooses slot, flick types the word, positive roll exits.
+      if (suggestModeRef.current) {
+        if (roll >= MENU_ENTER_ROLL_THRESHOLD) {
+          exitSuggestMode();
+          return;
+        }
+        const PITCH_MAX = 75;
+        const clampedPitch = Math.max(-PITCH_MAX, Math.min(PITCH_MAX, reading.pitch));
+        const ratio = (clampedPitch + PITCH_MAX) / (2 * PITCH_MAX);
+        const idx = Math.min(Math.max(Math.floor(ratio * SUGGEST_SLOT_COUNT), 0), SUGGEST_SLOT_COUNT - 1);
+        setHoveredSuggestion(idx);
+
+        if (isHighMagnitude && !wasHighMagnitude && !magnitudeTriggeredRef.current) {
+          fireSpike();
+          const word = suggestionsRef.current[idx];
+          if (word) {
+            applySuggestion(word);
+            exitSuggestMode();
+          }
+        }
+
+        return;
       }
 
       // Menu mode: pitch chooses button, flick presses, negative roll exits.
@@ -549,8 +690,28 @@ export default function DonutSelector() {
       if (charAnchorTimerRef.current) clearTimeout(charAnchorTimerRef.current);
       if (menuEnterTimerRef.current) clearTimeout(menuEnterTimerRef.current);
       if (backHoldTimerRef.current) clearTimeout(backHoldTimerRef.current);
+      if (suggestEnterTimerRef.current) clearTimeout(suggestEnterTimerRef.current);
+      if (completionsDebounceRef.current) clearTimeout(completionsDebounceRef.current);
+      completionsAbortRef.current?.abort();
     };
   }, []);
+
+  React.useEffect(() => {
+    if (completionsDebounceRef.current) clearTimeout(completionsDebounceRef.current);
+    completionsDebounceRef.current = setTimeout(() => {
+      completionsAbortRef.current?.abort();
+      const ac = new AbortController();
+      completionsAbortRef.current = ac;
+      fetchCompletions(typedText, ac.signal)
+        .then((sugs) => {
+          if (!ac.signal.aborted) setSuggestions(sugs);
+        })
+        .catch(() => { /* network/abort — leave previous suggestions */ });
+    }, COMPLETIONS_DEBOUNCE_MS);
+    return () => {
+      if (completionsDebounceRef.current) clearTimeout(completionsDebounceRef.current);
+    };
+  }, [typedText]);
 
   const createDonutPath = (startAngle: number, endAngle: number, outerRadius = 180, innerRadius = 80) => {
     const largeArc = endAngle - startAngle > 180 ? 1 : 0;
@@ -614,18 +775,16 @@ export default function DonutSelector() {
     return (absRoll - MENU_GLOW_START_DEG) / (absThreshold - MENU_GLOW_START_DEG);
   };
   // Enter-glow only on the wheel stage (not in rectangle, not already in menu).
-  const enterIntensity = (showRectangle || isMenuMode) ? 0 : computeRimIntensity(currentRoll, MENU_ENTER_ROLL_THRESHOLD);
-  // Exit-glow on the wheel stage AND in menu mode (since rolling left exits the menu).
-  const exitIntensity = showRectangle ? 0 : computeRimIntensity(currentRoll, MENU_EXIT_ROLL_THRESHOLD);
+  const enterIntensity = (showRectangle || isMenuMode || isSuggestMode) ? 0 : computeRimIntensity(currentRoll, MENU_ENTER_ROLL_THRESHOLD);
+  // Right rim glow doubles as: "approaching suggest-menu" at top level, and "approaching menu-exit" while in left menu.
+  const exitIntensity = (showRectangle || isSuggestMode) ? 0 : computeRimIntensity(currentRoll, MENU_EXIT_ROLL_THRESHOLD);
   // Back-gesture intensity: while in the rectangle stage, rolling left builds toward
   // the back-hold trigger. Lights the Back button blue so the user knows what's about to fire.
   const backIntensity = showRectangle ? computeRimIntensity(currentRoll, MENU_EXIT_ROLL_THRESHOLD) : 0;
 
   return (
     <div className="min-h-screen w-full bg-linear-to-br from-slate-900 via-slate-800 to-slate-900 relative overflow-hidden">
-      <TiltTelemetry />
-
-      <div className="absolute top-1/2 right-121 -translate-y-1/2 z-30">
+      <div className="absolute top-[254px] right-[calc(50%+250px)] -translate-y-1/2 z-30">
         <div
           className="backdrop-blur-md border border-white/30 rounded-xl p-2 flex flex-col gap-2"
           style={{
@@ -685,51 +844,95 @@ export default function DonutSelector() {
         </div>
       </div>
 
-      <div className="absolute top-1/2 left-8 -translate-y-1/2 w-[50%] max-w-3xl z-20">
+      {!showRectangle && (
+        <div className="absolute top-[254px] left-[calc(50%+250px)] -translate-y-1/2 z-30">
+          <div
+            className="backdrop-blur-md border border-white/30 rounded-xl p-2 flex flex-col gap-2"
+            style={{
+              background: isSuggestMode
+                ? 'linear-gradient(180deg, rgba(59, 130, 246, 0.35), rgba(30, 41, 59, 0.65))'
+                : 'linear-gradient(180deg, rgba(30, 41, 59, 0.45), rgba(51, 65, 85, 0.45))',
+              boxShadow: isSuggestMode
+                ? '0 0 28px rgba(59, 130, 246, 0.45), 0 10px 24px rgba(0, 0, 0, 0.35)'
+                : '0 8px 20px rgba(0, 0, 0, 0.25)',
+              transition: 'background 0.25s ease, box-shadow 0.25s ease',
+            }}
+          >
+            {Array.from({ length: SUGGEST_SLOT_COUNT }).map((_, index) => {
+              const word = suggestions[index] ?? '';
+              const isHovered = hoveredSuggestion === index;
+              const handleClick = () => applySuggestion(word);
+              return (
+                <button
+                  key={index}
+                  type="button"
+                  onClick={handleClick}
+                  disabled={!word}
+                  className="min-w-[7rem] h-14 px-3 rounded-lg border flex items-center justify-center text-white/90 transition-all duration-150 disabled:opacity-40"
+                  style={{
+                    borderColor: isSuggestMode && isHovered
+                      ? 'rgba(255,255,255,0.9)'
+                      : 'rgba(255,255,255,0.25)',
+                    background: isSuggestMode && isHovered
+                      ? 'linear-gradient(135deg, rgba(255,255,255,0.32), rgba(255,255,255,0.12))'
+                      : 'linear-gradient(135deg, rgba(255,255,255,0.12), rgba(255,255,255,0.04))',
+                    boxShadow: isSuggestMode && isHovered
+                      ? '0 0 18px rgba(255,255,255,0.45), 0 0 24px rgba(59,130,246,0.4)'
+                      : 'none',
+                    transform: isSuggestMode && isHovered ? 'scale(1.05)' : 'scale(1)',
+                    fontFamily: 'Atkinson Hyperlegible, sans-serif',
+                  }}
+                >
+                  <span className="text-sm font-medium truncate">{word || '—'}</span>
+                </button>
+              );
+            })}
+          </div>
+        </div>
+      )}
+
+      <div className="absolute bottom-4 left-1/2 -translate-x-1/2 w-[min(92vw,40rem)] z-20">
         <div
-          className="backdrop-blur-md border border-white/30 rounded-xl p-6"
+          className="backdrop-blur-md border border-white/30 rounded-lg px-4 py-3 flex items-center gap-3"
           style={{
             background: 'linear-gradient(135deg, rgba(30, 41, 59, 0.85), rgba(51, 65, 85, 0.55))',
-            boxShadow: '0 10px 40px rgba(0, 0, 0, 0.3), 0 0 60px rgba(99, 102, 241, 0.15)',
+            boxShadow: '0 6px 20px rgba(0, 0, 0, 0.3), 0 0 30px rgba(99, 102, 241, 0.12)',
             fontFamily: 'Atkinson Hyperlegible, sans-serif',
           }}
         >
-          <div className="flex items-center justify-between mb-3">
-            <p className="text-xs uppercase tracking-wider text-white/70 font-semibold">Input</p>
-            <div className="flex gap-2">
-              <button
-                type="button"
-                onClick={handleBackspace}
-                aria-label="Backspace"
-                className="text-xs px-3 py-1.5 rounded-md border border-white/30 text-white/90 hover:bg-white/15 hover:border-white/40 transition-all duration-200 hover:shadow-lg flex items-center justify-center"
-              >
-                <FaBackspace size={14} />
-              </button>
-              <button
-                type="button"
-                onClick={handleClear}
-                aria-label="Clear"
-                className="text-xs px-3 py-1.5 rounded-md border border-white/30 text-white/90 hover:bg-white/15 hover:border-white/40 transition-all duration-200 hover:shadow-lg flex items-center justify-center"
-              >
-                <IoIosCloseCircle size={14} />
-              </button>
-            </div>
-          </div>
-          <p className="text-2xl text-white font-medium font-mono wrap-break-word min-h-10">
+          <p className="flex-1 text-lg text-white font-medium font-mono wrap-break-word min-h-7 leading-7">
             {typedText || <span className="text-white/30">_</span>}
             <span
-              className="inline-block w-0.5 h-6 ml-0.5 animate-pulse align-middle"
+              className="inline-block w-0.5 h-5 ml-0.5 animate-pulse align-middle"
               style={{
                 background: 'linear-gradient(to bottom, rgba(139, 92, 246, 0.9), rgba(99, 102, 241, 0.9))',
-                boxShadow: '0 0 10px rgba(139, 92, 246, 0.6)',
+                boxShadow: '0 0 8px rgba(139, 92, 246, 0.6)',
               }}
             />
           </p>
+          <div className="flex gap-1.5 shrink-0">
+            <button
+              type="button"
+              onClick={handleBackspace}
+              aria-label="Backspace"
+              className="text-xs px-2 py-1 rounded-md border border-white/30 text-white/90 hover:bg-white/15 hover:border-white/40 transition-all duration-200 flex items-center justify-center"
+            >
+              <FaBackspace size={12} />
+            </button>
+            <button
+              type="button"
+              onClick={handleClear}
+              aria-label="Clear"
+              className="text-xs px-2 py-1 rounded-md border border-white/30 text-white/90 hover:bg-white/15 hover:border-white/40 transition-all duration-200 flex items-center justify-center"
+            >
+              <IoIosCloseCircle size={12} />
+            </button>
+          </div>
         </div>
       </div>
 
       <div
-        className="absolute top-1/2 right-8 -translate-y-1/2 z-10"
+        className="absolute top-6 left-1/2 -translate-x-1/2 z-10"
         style={{ width: '460px', height: '460px' }}
       >
       <div
@@ -909,7 +1112,7 @@ export default function DonutSelector() {
       </div>
 
       {showRectangle && selectedSection !== null && (
-        <div className="absolute top-1/2 right-8 -translate-y-1/2 z-10 flex flex-col items-center justify-center gap-6" style={{ width: '460px', height: '460px' }}>
+        <div className="absolute top-6 left-1/2 -translate-x-1/2 z-10 flex flex-col items-center justify-center gap-6" style={{ width: '460px', height: '460px' }}>
           <div className="relative flex items-center justify-center" style={{ width: '420px', height: '420px', animation: 'slideIn 0.2s ease-out both' }}>
             <svg width="420" height="420" viewBox="0 0 400 400" className="drop-shadow-2xl">
               <defs>
@@ -1051,26 +1254,6 @@ export default function DonutSelector() {
               })()}
             </svg>
           </div>
-          <button
-            onClick={handleBack}
-            className="px-6 py-3 backdrop-blur-md border rounded-lg transition-all duration-200"
-            style={{
-              background: backIntensity > 0
-                ? `linear-gradient(135deg, rgba(59, 130, 246, ${0.18 + backIntensity * 0.5}), rgba(99, 102, 241, ${0.10 + backIntensity * 0.4}))`
-                : 'linear-gradient(135deg, rgba(255, 255, 255, 0.15), rgba(255, 255, 255, 0.05))',
-              borderColor: backIntensity > 0
-                ? `rgba(96, 165, 250, ${0.5 + backIntensity * 0.5})`
-                : 'rgba(255, 255, 255, 0.4)',
-              boxShadow: backIntensity > 0
-                ? `0 0 ${16 + backIntensity * 18}px rgba(59, 130, 246, ${0.35 + backIntensity * 0.45}), 0 4px 16px 0 rgba(0, 0, 0, 0.3)`
-                : '0 4px 16px 0 rgba(0, 0, 0, 0.3)',
-              transform: `scale(${1 + backIntensity * 0.05})`,
-              fontFamily: 'Atkinson Hyperlegible, sans-serif',
-              animation: 'slideIn 0.4s ease-out 0.1s both'
-            }}
-          >
-            <span className="text-white font-medium">Back</span>
-          </button>
         </div>
       )}
 

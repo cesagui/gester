@@ -3,7 +3,19 @@ import TiltTelemetry from './TiltTelemetry';
 import MotionGraph from './MotionGraph';
 import { tiltStore } from '../lib/tiltStore';
 
-const SELECT_GESTURE_MAGNITUDE_THRESHOLD = 750;
+// ── Sensitivity knobs ────────────────────────────────────────────────────
+// Wheel (outer sections) — pitch → section index
+const WHEEL_PITCH_RANGE_DEG = 90; // total pitch span across all wheel sections
+const WHEEL_DEADZONE_DEG = 5;     // |pitch| below this → nothing selected (rest pose)
+
+// Letter rectangle — pitch → subgroup index inside the active group
+const LETTER_PITCH_MAX_DEG = 30;  // ±this maps across the subgroups (smaller = more sensitive)
+
+// Magnitude flick "select" gesture (with hysteresis)
+const MAGNITUDE_ENGAGE = 750;     // rising-edge: must exceed this to fire a select
+const MAGNITUDE_REARM = 400;      // must fall below this before another select can fire
+
+// Section "anchor" (lock current section after holding this long)
 const ANCHOR_DELAY_MS = 500;
 
 const SECTIONS = [
@@ -75,12 +87,13 @@ export default function DonutSelector() {
   const anchorTimerRef = React.useRef<ReturnType<typeof setTimeout> | null>(null);
   React.useEffect(() => {
     return tiltStore.subscribe((reading) => {
-      const isHighMagnitude = reading.magnitude >= SELECT_GESTURE_MAGNITUDE_THRESHOLD;
+      const isHighMagnitude = reading.magnitude >= MAGNITUDE_ENGAGE;
       const wasHighMagnitude = lastHighMagnitudeRef.current;
       lastHighMagnitudeRef.current = isHighMagnitude;
 
-      // Reset magnitude-trigger guard when magnitude falls below threshold
-      if (!isHighMagnitude) {
+      // Hysteresis: only re-arm after magnitude has fallen below the lower threshold.
+      // Prevents double-firing when the signal hovers near MAGNITUDE_ENGAGE.
+      if (reading.magnitude < MAGNITUDE_REARM) {
         magnitudeTriggeredRef.current = false;
       }
 
@@ -94,9 +107,8 @@ export default function DonutSelector() {
 
           const pitchForGroup = reading.pitch;
           if (typeof pitchForGroup === 'number' && groupCount > 0) {
-            const PITCH_MAX = 90;
-            const clampedPitch = Math.max(-PITCH_MAX, Math.min(PITCH_MAX, pitchForGroup));
-            const ratio = (clampedPitch + PITCH_MAX) / (2 * PITCH_MAX);
+            const clampedPitch = Math.max(-LETTER_PITCH_MAX_DEG, Math.min(LETTER_PITCH_MAX_DEG, pitchForGroup));
+            const ratio = (clampedPitch + LETTER_PITCH_MAX_DEG) / (2 * LETTER_PITCH_MAX_DEG);
             let groupIdx = Math.floor(ratio * groupCount);
             if (groupIdx >= groupCount) groupIdx = groupCount - 1;
             const clampedIdx = Math.min(Math.max(groupIdx, 0), groupCount - 1);
@@ -144,20 +156,17 @@ export default function DonutSelector() {
         return;
       }
 
-      // No deadzone: allow pitch values near zero to map to sections
-
-      // Map pitch in the range [0, 90] degrees evenly to the available sections.
-      // If pitch is outside this range, don't select any section.
+      // Map pitch evenly across the wheel's sections, with a small deadzone at rest.
       let next: number | null = null;
       const pitch = reading.pitch;
       const bins = SECTIONS.length;
 
-      if (typeof pitch === 'number') {
-        // Wrap pitch into the 0..90 range so values outside loop around.
-        let normalized = pitch % 90;
-        if (normalized < 0) normalized += 90;
+      if (typeof pitch === 'number' && Math.abs(pitch) >= WHEEL_DEADZONE_DEG) {
+        // Wrap pitch into [0, WHEEL_PITCH_RANGE_DEG) so values outside loop around.
+        let normalized = pitch % WHEEL_PITCH_RANGE_DEG;
+        if (normalized < 0) normalized += WHEEL_PITCH_RANGE_DEG;
 
-        const ratio = normalized / 90;
+        const ratio = normalized / WHEEL_PITCH_RANGE_DEG;
         next = Math.floor(ratio * bins);
         if (next >= bins) next = bins - 1;
       }

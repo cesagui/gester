@@ -705,9 +705,14 @@ export default function DonutSelector() {
       completionsAbortRef.current = ac;
       fetchCompletions(typedText, ac.signal)
         .then((sugs) => {
-          if (!ac.signal.aborted) setSuggestions(sugs);
+          if (!ac.signal.aborted) {
+            console.log('[completions]', sugs);
+            setSuggestions(sugs);
+          }
         })
-        .catch(() => { /* network/abort — leave previous suggestions */ });
+        .catch((err) => {
+          if (err?.name !== 'AbortError') console.error('[completions]', err);
+        });
     }, COMPLETIONS_DEBOUNCE_MS);
     return () => {
       if (completionsDebounceRef.current) clearTimeout(completionsDebounceRef.current);

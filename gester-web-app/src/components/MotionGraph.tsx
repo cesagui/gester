@@ -4,7 +4,6 @@ import { tiltStore, type TiltReading } from '../lib/tiltStore';
 const ANGLE_RANGE_DEG = 45;
 const MAGNITUDE_MAX_DPS = 400;
 const TRAIL_MS = 1500;
-const CANVAS_SIZE = 280;
 
 type TrailPoint = {
   x: number;
@@ -13,16 +12,26 @@ type TrailPoint = {
   t: number;
 };
 
+type MotionGraphProps = {
+  embedded?: boolean;
+};
+
 function magnitudeToHsla(mag: number, alpha = 1) {
   const normalized = Math.min(1, Math.max(0, mag / MAGNITUDE_MAX_DPS));
   const hue = 240 * (1 - normalized);
   return `hsla(${hue.toFixed(0)}, 85%, 55%, ${alpha})`;
 }
 
-export default function MotionGraph() {
+function clamp(v: number, lo: number, hi: number) {
+  return Math.max(lo, Math.min(hi, v));
+}
+
+export default function MotionGraph({ embedded = false }: MotionGraphProps) {
   const canvasRef = React.useRef<HTMLCanvasElement>(null);
   const latestRef = React.useRef<TiltReading | null>(null);
   const trailRef = React.useRef<TrailPoint[]>([]);
+
+  const canvasSize = embedded ? 180 : 200;
 
   React.useEffect(() => {
     return tiltStore.subscribe((reading) => {
@@ -37,15 +46,16 @@ export default function MotionGraph() {
     if (!ctx) return;
 
     const dpr = window.devicePixelRatio || 1;
-    canvas.width = CANVAS_SIZE * dpr;
-    canvas.height = CANVAS_SIZE * dpr;
-    canvas.style.width = `${CANVAS_SIZE}px`;
-    canvas.style.height = `${CANVAS_SIZE}px`;
+    canvas.width = canvasSize * dpr;
+    canvas.height = canvasSize * dpr;
+    canvas.style.width = `${canvasSize}px`;
+    canvas.style.height = `${canvasSize}px`;
     ctx.scale(dpr, dpr);
 
-    const cx = CANVAS_SIZE / 2;
-    const cy = CANVAS_SIZE / 2;
-    const scale = (CANVAS_SIZE / 2 - 16) / ANGLE_RANGE_DEG;
+    const cx = canvasSize / 2;
+    const cy = canvasSize / 2;
+    const margin = embedded ? 8 : 16;
+    const scale = (canvasSize / 2 - margin) / ANGLE_RANGE_DEG;
 
     let raf = 0;
     let lastSampleTimestamp = 0;
@@ -53,39 +63,45 @@ export default function MotionGraph() {
     const draw = () => {
       const now = performance.now();
 
-      ctx.fillStyle = 'rgba(15, 23, 42, 0.92)';
-      ctx.fillRect(0, 0, CANVAS_SIZE, CANVAS_SIZE);
+      if (embedded) {
+        ctx.clearRect(0, 0, canvasSize, canvasSize);
+      } else {
+        ctx.fillStyle = 'rgba(15, 23, 42, 0.92)';
+        ctx.fillRect(0, 0, canvasSize, canvasSize);
+      }
 
-      ctx.strokeStyle = 'rgba(255,255,255,0.08)';
+      ctx.strokeStyle = embedded ? 'rgba(255,255,255,0.06)' : 'rgba(255,255,255,0.08)';
       ctx.lineWidth = 1;
       for (let d = -ANGLE_RANGE_DEG; d <= ANGLE_RANGE_DEG; d += 15) {
         const x = cx + d * scale;
         const y = cy + d * scale;
         ctx.beginPath();
-        ctx.moveTo(x, 16);
-        ctx.lineTo(x, CANVAS_SIZE - 16);
-        ctx.moveTo(16, y);
-        ctx.lineTo(CANVAS_SIZE - 16, y);
+        ctx.moveTo(x, margin);
+        ctx.lineTo(x, canvasSize - margin);
+        ctx.moveTo(margin, y);
+        ctx.lineTo(canvasSize - margin, y);
         ctx.stroke();
       }
 
-      ctx.strokeStyle = 'rgba(255,255,255,0.25)';
+      ctx.strokeStyle = embedded ? 'rgba(255,255,255,0.18)' : 'rgba(255,255,255,0.25)';
       ctx.beginPath();
-      ctx.moveTo(16, cy);
-      ctx.lineTo(CANVAS_SIZE - 16, cy);
-      ctx.moveTo(cx, 16);
-      ctx.lineTo(cx, CANVAS_SIZE - 16);
+      ctx.moveTo(margin, cy);
+      ctx.lineTo(canvasSize - margin, cy);
+      ctx.moveTo(cx, margin);
+      ctx.lineTo(cx, canvasSize - margin);
       ctx.stroke();
 
-      ctx.fillStyle = 'rgba(255,255,255,0.45)';
-      ctx.font = '10px Rubik, sans-serif';
-      ctx.textAlign = 'right';
-      ctx.fillText('roll →', CANVAS_SIZE - 18, cy - 4);
-      ctx.textAlign = 'left';
-      ctx.save();
-      ctx.translate(cx + 4, 18);
-      ctx.fillText('↑ pitch', 0, 0);
-      ctx.restore();
+      if (!embedded) {
+        ctx.fillStyle = 'rgba(255,255,255,0.45)';
+        ctx.font = '10px Rubik, sans-serif';
+        ctx.textAlign = 'right';
+        ctx.fillText('roll →', canvasSize - 18, cy - 4);
+        ctx.textAlign = 'left';
+        ctx.save();
+        ctx.translate(cx + 4, 18);
+        ctx.fillText('↑ pitch', 0, 0);
+        ctx.restore();
+      }
 
       const reading = latestRef.current;
       if (reading && performance.now() - lastSampleTimestamp > 0) {
@@ -102,17 +118,17 @@ export default function MotionGraph() {
         const alpha = 1 - age;
         ctx.fillStyle = magnitudeToHsla(p.mag, alpha * 0.85);
         ctx.beginPath();
-        ctx.arc(p.x, p.y, 3, 0, Math.PI * 2);
+        ctx.arc(p.x, p.y, embedded ? 2 : 3, 0, Math.PI * 2);
         ctx.fill();
       }
 
       const last = trailRef.current[trailRef.current.length - 1];
       if (last) {
         ctx.shadowColor = magnitudeToHsla(last.mag, 1);
-        ctx.shadowBlur = 16;
+        ctx.shadowBlur = embedded ? 10 : 16;
         ctx.fillStyle = magnitudeToHsla(last.mag, 1);
         ctx.beginPath();
-        ctx.arc(last.x, last.y, 7, 0, Math.PI * 2);
+        ctx.arc(last.x, last.y, embedded ? 5 : 7, 0, Math.PI * 2);
         ctx.fill();
         ctx.shadowBlur = 0;
       }
@@ -122,7 +138,22 @@ export default function MotionGraph() {
     raf = requestAnimationFrame(draw);
 
     return () => cancelAnimationFrame(raf);
-  }, []);
+  }, [canvasSize, embedded]);
+
+  if (embedded) {
+    return (
+      <div
+        className="rounded-full overflow-hidden pointer-events-none"
+        style={{
+          width: canvasSize,
+          height: canvasSize,
+          background: 'rgba(15, 23, 42, 0.35)',
+        }}
+      >
+        <canvas ref={canvasRef} />
+      </div>
+    );
+  }
 
   return (
     <div className="absolute bottom-6 right-6 z-30">
@@ -158,8 +189,4 @@ export default function MotionGraph() {
       </div>
     </div>
   );
-}
-
-function clamp(v: number, lo: number, hi: number) {
-  return Math.max(lo, Math.min(hi, v));
 }

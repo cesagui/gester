@@ -54,6 +54,17 @@ export default function TiltTelemetry({ onReading }: TiltTelemetryProps) {
         const r = parseTiltPacket(packet);
         setReading(r);
         if (typeof onReading === 'function') onReading(r);
+        if (
+          r.pitch !== null &&
+          r.roll !== null &&
+          r.magnitude !== null
+        ) {
+          tiltStore.publish({
+            pitch: r.pitch,
+            roll: r.roll,
+            magnitude: r.magnitude,
+          });
+        }
       };
       client.onDisconnect = () => {
         setIsConnected(false);
@@ -91,7 +102,7 @@ export default function TiltTelemetry({ onReading }: TiltTelemetryProps) {
   }, []);
 
   return (
-    <div className="absolute top-6 left-1/2 -translate-x-1/2 z-30 w-[min(92vw,34rem)]">
+    <div className="absolute top-6 left-8 z-30 w-[min(92vw,34rem)]">
       <div
         className="backdrop-blur-md border border-white/25 rounded-xl px-4 py-3"
         style={{

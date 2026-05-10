@@ -1,58 +1,16 @@
 import React from 'react';
 import TiltTelemetry from './TiltTelemetry';
 import MotionGraph from './MotionGraph';
-import { tiltStore } from '../lib/tiltStore';
-
-const TILT_DEADZONE_DEG = 0;
 
 export default function DonutSelector() {
   const [hoveredSection, setHoveredSection] = React.useState<number | null>(null);
   const [selectedSection, setSelectedSection] = React.useState<number | null>(null);
   const [showRectangle, setShowRectangle] = React.useState(false);
   const [hoveredChar, setHoveredChar] = React.useState<number | null>(null);
+  const [typedText, setTypedText] = React.useState('');
 
-  const showRectangleRef = React.useRef(showRectangle);
-  React.useEffect(() => {
-    showRectangleRef.current = showRectangle;
-  }, [showRectangle]);
-
-  const lastTiltSectionRef = React.useRef<number | null>(null);
-  React.useEffect(() => {
-    return tiltStore.subscribe((reading) => {
-      if (showRectangleRef.current) return;
-
-      // Ignore very small pitch values to avoid accidental selection
-      const tiltMag = Math.abs(reading.pitch);
-      if (tiltMag < TILT_DEADZONE_DEG) {
-        if (lastTiltSectionRef.current !== null) {
-          lastTiltSectionRef.current = null;
-          setHoveredSection(null);
-        }
-        return;
-      }
-
-      // Map pitch in the range [0, 90] degrees evenly to the available sections.
-      // If pitch is outside this range, don't select any section.
-      let next: number | null = null;
-      const pitch = reading.pitch;
-      const bins = sections.length;
-
-      if (typeof pitch === 'number') {
-        // Wrap pitch into the 0..90 range so values outside loop around.
-        let normalized = pitch % 90;
-        if (normalized < 0) normalized += 90;
-
-        const ratio = normalized / 90;
-        next = Math.floor(ratio * bins);
-        if (next >= bins) next = bins - 1;
-      }
-
-      if (next !== lastTiltSectionRef.current) {
-        lastTiltSectionRef.current = next;
-        setHoveredSection(next);
-      }
-    });
-  }, []);
+  // Use pitch-based selection instead of mouse hover
+  const usePitchSelection = true;
 
   const sections = [
     { letters: 'ETA', gradient: 'url(#gradient0)' },
@@ -143,8 +101,18 @@ export default function DonutSelector() {
     setHoveredSection(null);
   };
 
-  // Use pitch-based selection instead of mouse hover
-  const usePitchSelection = true;
+  const handleLetterClick = (char: string) => {
+    setTypedText((prev) => prev + char);
+    handleBack();
+  };
+
+  const handleBackspace = () => {
+    setTypedText((prev) => prev.slice(0, -1));
+  };
+
+  const handleClear = () => {
+    setTypedText('');
+  };
 
   const handleTelemetryReading = (r: { pitch: number | null; roll: number | null; magnitude: number | null }) => {
     if (!usePitchSelection) return;
@@ -171,13 +139,59 @@ export default function DonutSelector() {
   };
 
   return (
-    <div className="min-h-screen w-full flex flex-col items-center justify-center bg-linear-to-br from-slate-900 via-slate-800 to-slate-900 relative">
+    <div className="min-h-screen w-full bg-linear-to-br from-slate-900 via-slate-800 to-slate-900 relative overflow-hidden">
       <TiltTelemetry onReading={handleTelemetryReading} />
+
+      <div className="absolute top-1/2 left-8 -translate-y-1/2 w-[50%] max-w-3xl z-20">
+        <div
+          className="backdrop-blur-md border border-white/25 rounded-xl p-6"
+          style={{
+            background: 'linear-gradient(135deg, rgba(30, 41, 59, 0.75), rgba(51, 65, 85, 0.45))',
+            boxShadow: '0 10px 30px rgba(0, 0, 0, 0.25)',
+            fontFamily: 'Rubik, sans-serif',
+          }}
+        >
+          <div className="flex items-center justify-between mb-3">
+            <p className="text-xs uppercase tracking-wider text-white/60">Input</p>
+            <div className="flex gap-2">
+              <button
+                type="button"
+                onClick={handleBackspace}
+                className="text-xs px-3 py-1 rounded-md border border-white/25 text-white/90 hover:bg-white/10 transition-colors"
+              >
+                ⌫
+              </button>
+              <button
+                type="button"
+                onClick={handleClear}
+                className="text-xs px-3 py-1 rounded-md border border-white/25 text-white/90 hover:bg-white/10 transition-colors"
+              >
+                Clear
+              </button>
+            </div>
+          </div>
+          <p className="text-2xl text-white font-medium font-mono break-words min-h-[2.5rem]">
+            {typedText || <span className="text-white/30">_</span>}
+            <span className="inline-block w-[2px] h-6 bg-white/70 ml-0.5 animate-pulse align-middle" />
+          </p>
+        </div>
+      </div>
+
+      <div
+        className="absolute top-1/2 right-8 -translate-y-1/2 z-10"
+        style={{ width: '460px', height: '460px' }}
+      >
+      <div
+        className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 pointer-events-none"
+        style={{ opacity: showRectangle ? 0 : 1, transition: 'opacity 0.5s' }}
+      >
+        <MotionGraph embedded />
+      </div>
       <svg
-        width="500"
-        height="500"
+        width="460"
+        height="460"
         viewBox="0 0 400 400"
-        className="drop-shadow-2xl transition-opacity duration-500 absolute"
+        className="drop-shadow-2xl transition-opacity duration-500 relative"
         style={{ opacity: showRectangle ? 0 : 1, pointerEvents: showRectangle ? 'none' : 'auto' }}
       >
         <defs>
@@ -261,9 +275,10 @@ export default function DonutSelector() {
           strokeWidth="2"
         />
       </svg>
+      </div>
 
       {showRectangle && selectedSection !== null && (
-        <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 flex flex-col items-center gap-8">
+        <div className="absolute top-1/2 right-8 -translate-y-1/2 z-10 flex flex-col items-center justify-center gap-6" style={{ width: '460px', height: '460px' }}>
           <div
             className="flex backdrop-blur-md border border-white/30 rounded-lg overflow-hidden relative"
             style={{
@@ -278,12 +293,13 @@ export default function DonutSelector() {
               return (
                 <div
                   key={idx}
-                  className="w-20 h-24 flex items-center justify-center relative"
+                  className="w-20 h-24 flex items-center justify-center relative cursor-pointer"
                   style={{
                     borderRight: idx < sections[selectedSection].letters.length - 1 ? '1px solid rgba(255, 255, 255, 0.2)' : 'none'
                   }}
                   onMouseEnter={() => setHoveredChar(idx)}
                   onMouseLeave={() => setHoveredChar(null)}
+                  onClick={() => handleLetterClick(char)}
                 >
                   <div
                     className="absolute inset-0 pointer-events-none border-2 border-white/60 transition-opacity duration-200"

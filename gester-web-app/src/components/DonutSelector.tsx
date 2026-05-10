@@ -23,11 +23,13 @@ const REARM_DELAY_MS = 200;       // cooldown after a fire before another select
 // Sidebar menu mode
 const MENU_ENTER_ROLL_THRESHOLD = 50;
 const MENU_EXIT_ROLL_THRESHOLD = -50;
+const MENU_GLOW_START_DEG = 40;   // rim glow begins at this absolute roll, peaks at the threshold, hidden past it
 const MENU_ENTER_HOLD_MS = 2000;
 const MENU_BUTTONS = ['1', '2', '3'];
 
 // Section "anchor" (lock current section after holding this long)
 const ANCHOR_DELAY_MS = 500;
+// ────────────────────────────────────────────────────
 
 const SECTIONS = [
   { letters: 'ABCDEFG', gradient: 'url(#gradient0)' },
@@ -498,13 +500,16 @@ export default function DonutSelector() {
   const activeGroups = splitIntoGroups(activeGroupLetters, 4).filter((group) => group.length > 0);
   const activeGradient = selectedSection !== null ? GRADIENTS[selectedSection] : GRADIENTS[0];
 
-  // Roll-direction glows: progress toward each threshold, regardless of sign convention.
-  const enterIntensity = showRectangle
-    ? 0
-    : Math.max(0, Math.min(1, currentRoll / MENU_ENTER_ROLL_THRESHOLD));
-  const exitIntensity = showRectangle
-    ? 0
-    : Math.max(0, Math.min(1, currentRoll / MENU_EXIT_ROLL_THRESHOLD));
+  // Roll-direction glows: only visible in the [MENU_GLOW_START_DEG, |threshold|] window.
+  const computeRimIntensity = (roll: number, threshold: number) => {
+    const sign = Math.sign(threshold) || 1;
+    const absRoll = roll * sign;
+    const absThreshold = Math.abs(threshold);
+    if (absRoll < MENU_GLOW_START_DEG || absRoll > absThreshold) return 0;
+    return (absRoll - MENU_GLOW_START_DEG) / (absThreshold - MENU_GLOW_START_DEG);
+  };
+  const enterIntensity = showRectangle ? 0 : computeRimIntensity(currentRoll, MENU_ENTER_ROLL_THRESHOLD);
+  const exitIntensity = showRectangle ? 0 : computeRimIntensity(currentRoll, MENU_EXIT_ROLL_THRESHOLD);
 
   return (
     <div className="min-h-screen w-full bg-linear-to-br from-slate-900 via-slate-800 to-slate-900 relative overflow-hidden">
@@ -580,16 +585,18 @@ export default function DonutSelector() {
               <button
                 type="button"
                 onClick={handleBackspace}
-                className="text-xs px-3 py-1.5 rounded-md border border-white/30 text-white/90 hover:bg-white/15 hover:border-white/40 transition-all duration-200 hover:shadow-lg"
+                aria-label="Backspace"
+                className="text-xs px-3 py-1.5 rounded-md border border-white/30 text-white/90 hover:bg-white/15 hover:border-white/40 transition-all duration-200 hover:shadow-lg flex items-center justify-center"
               >
-                ⌫
+                <FaBackspace size={14} />
               </button>
               <button
                 type="button"
                 onClick={handleClear}
-                className="text-xs px-3 py-1.5 rounded-md border border-white/30 text-white/90 hover:bg-white/15 hover:border-white/40 transition-all duration-200 hover:shadow-lg"
+                aria-label="Clear"
+                className="text-xs px-3 py-1.5 rounded-md border border-white/30 text-white/90 hover:bg-white/15 hover:border-white/40 transition-all duration-200 hover:shadow-lg flex items-center justify-center"
               >
-                Clear
+                <IoIosCloseCircle size={14} />
               </button>
             </div>
           </div>
@@ -684,20 +691,18 @@ export default function DonutSelector() {
               <path
                 d={borderPath}
                 fill="none"
-                stroke={isAnchored ? "rgba(255, 255, 255, 1)" : isHovered ? "rgba(255, 255, 255, 0.8)" : "rgba(255, 255, 255, 0.5)"}
-                strokeWidth={isAnchored ? "6" : isHovered ? "4" : "0.5"}
+                stroke="rgba(255, 255, 255, 1)"
+                strokeWidth={isAnchored ? "6" : "0.5"}
                 strokeDasharray={pathLength}
-                strokeDashoffset={isHovered ? 0 : pathLength}
+                strokeDashoffset={isAnchored ? 0 : pathLength}
                 className="pointer-events-none"
                 style={{
-                  transition: isHovered
-                    ? 'stroke-dashoffset 0.4s ease-out, stroke-width 0.2s ease-out, stroke 0.3s ease-out, filter 0.3s ease-out'
-                    : 'stroke-dashoffset 0.4s ease-in, stroke-width 0.2s ease-in, stroke 0.3s ease-in, filter 0.3s ease-in',
+                  transition: isAnchored
+                    ? 'stroke-dashoffset 0.4s ease-out, stroke-width 0.2s ease-out, filter 0.3s ease-out'
+                    : 'stroke-dashoffset 0.4s ease-in, stroke-width 0.2s ease-in, filter 0.3s ease-in',
                   filter: isAnchored
                     ? 'drop-shadow(0 0 16px rgba(255, 255, 255, 1)) drop-shadow(0 0 28px rgba(139, 92, 246, 0.7))'
-                    : isHovered
-                      ? 'drop-shadow(0 0 8px rgba(255, 255, 255, 0.6))'
-                      : 'none'
+                    : 'none'
                 }}
               />
               <text
@@ -711,7 +716,7 @@ export default function DonutSelector() {
                   letterSpacing: '0.05em',
                   fontFamily: 'Atkinson Hyperlegible, sans-serif',
                   transition: 'filter 0.3s ease-out, transform 0.3s ease-out',
-                  transform: isAnchored ? 'scale(1.2)' : isHovered ? 'scale(1.1)' : 'scale(1)',
+                  transform: isHovered ? 'scale(1.1)' : 'scale(1)',
                   transformOrigin: 'center'
                 }}
               >
@@ -806,20 +811,18 @@ export default function DonutSelector() {
                     <path
                       d={borderPath}
                       fill="none"
-                      stroke={isAnchored ? 'rgba(255, 255, 255, 1)' : isHovered ? 'rgba(255, 255, 255, 0.85)' : 'rgba(255, 255, 255, 0.45)'}
-                      strokeWidth={isAnchored ? '6' : isHovered ? '4' : '0.5'}
+                      stroke="rgba(255, 255, 255, 1)"
+                      strokeWidth={isAnchored ? '6' : '0.5'}
                       strokeDasharray={pathLength}
-                      strokeDashoffset={isHovered ? 0 : pathLength}
+                      strokeDashoffset={isAnchored ? 0 : pathLength}
                       className="pointer-events-none"
                       style={{
-                        transition: isHovered
-                          ? 'stroke-dashoffset 0.4s ease-out, stroke-width 0.2s ease-out, stroke 0.3s ease-out, filter 0.3s ease-out'
-                          : 'stroke-dashoffset 0.4s ease-in, stroke-width 0.2s ease-in, stroke 0.3s ease-in, filter 0.3s ease-in',
+                        transition: isAnchored
+                          ? 'stroke-dashoffset 0.4s ease-out, stroke-width 0.2s ease-out, filter 0.3s ease-out'
+                          : 'stroke-dashoffset 0.4s ease-in, stroke-width 0.2s ease-in, filter 0.3s ease-in',
                         filter: isAnchored
                           ? 'drop-shadow(0 0 16px rgba(255, 255, 255, 1)) drop-shadow(0 0 28px rgba(139, 92, 246, 0.7))'
-                          : isHovered
-                            ? 'drop-shadow(0 0 8px rgba(255, 255, 255, 0.6))'
-                            : 'none'
+                          : 'none'
                       }}
                     />
                     {group.length > 0 && (
@@ -834,7 +837,7 @@ export default function DonutSelector() {
                           letterSpacing: '0.05em',
                           fontFamily: 'Atkinson Hyperlegible, sans-serif',
                           transition: 'filter 0.3s ease-out, transform 0.3s ease-out',
-                          transform: isAnchored ? 'scale(1.2)' : isHovered ? 'scale(1.1)' : 'scale(1)',
+                          transform: isHovered ? 'scale(1.1)' : 'scale(1)',
                           transformOrigin: 'center'
                         }}
                       >

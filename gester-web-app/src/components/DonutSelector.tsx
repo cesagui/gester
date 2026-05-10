@@ -25,6 +25,7 @@ const REARM_DELAY_MS = 200;       // cooldown after a fire before another select
 const MENU_ENTER_ROLL_THRESHOLD = 50;
 const MENU_EXIT_ROLL_THRESHOLD = -50;
 const MENU_ENTER_HOLD_MS = 2000;
+const MENU_EXIT_HOLD_MS = 2000; // hold duration to trigger "back" when in nested rectangle
 const MENU_BUTTONS = ['1', '2', '3'];
 
 // Section "anchor" (lock current section after holding this long)
@@ -110,9 +111,11 @@ export default function DonutSelector() {
   const anchorTimerRef = React.useRef<ReturnType<typeof setTimeout> | null>(null);
   const rearmTimerRef = React.useRef<ReturnType<typeof setTimeout> | null>(null);
   const menuEnterTimerRef = React.useRef<ReturnType<typeof setTimeout> | null>(null);
+  const backHoldTimerRef = React.useRef<ReturnType<typeof setTimeout> | null>(null);
   const lastCharIdxRef = React.useRef<number | null>(null);
   const anchoredCharRef = React.useRef<number | null>(null);
   const charAnchorTimerRef = React.useRef<ReturnType<typeof setTimeout> | null>(null);
+  const activeGroupDepthRef = React.useRef<number>(0);
 
   // Reset char tracking whenever the active group changes (entering rectangle, drilling deeper, exit)
   React.useEffect(() => {
@@ -122,6 +125,9 @@ export default function DonutSelector() {
       clearTimeout(charAnchorTimerRef.current);
       charAnchorTimerRef.current = null;
     }
+    // Keep a ref for the current depth of the active group stack so the
+    // tilt subscription can detect nested levels reliably.
+    activeGroupDepthRef.current = activeGroupStack.length;
   }, [activeGroupStack]);
 
   const fireSpike = () => {
@@ -224,6 +230,29 @@ export default function DonutSelector() {
       } else if (menuEnterTimerRef.current) {
         clearTimeout(menuEnterTimerRef.current);
         menuEnterTimerRef.current = null;
+      }
+
+      // Back-hold while in nested rectangle: hold negative roll to go back one level.
+      if (!menuModeRef.current && showRectangleRef.current) {
+        if (activeGroupDepthRef.current > 1) {
+          if (roll <= MENU_EXIT_ROLL_THRESHOLD) {
+            if (!backHoldTimerRef.current) {
+              backHoldTimerRef.current = setTimeout(() => {
+                handleBack();
+                backHoldTimerRef.current = null;
+              }, MENU_EXIT_HOLD_MS);
+            }
+          } else if (backHoldTimerRef.current) {
+            clearTimeout(backHoldTimerRef.current);
+            backHoldTimerRef.current = null;
+          }
+        } else if (backHoldTimerRef.current) {
+          clearTimeout(backHoldTimerRef.current);
+          backHoldTimerRef.current = null;
+        }
+      } else if (backHoldTimerRef.current) {
+        clearTimeout(backHoldTimerRef.current);
+        backHoldTimerRef.current = null;
       }
 
       // Menu mode: pitch chooses button, flick presses, negative roll exits.
@@ -432,6 +461,7 @@ export default function DonutSelector() {
       if (rearmTimerRef.current) clearTimeout(rearmTimerRef.current);
       if (charAnchorTimerRef.current) clearTimeout(charAnchorTimerRef.current);
       if (menuEnterTimerRef.current) clearTimeout(menuEnterTimerRef.current);
+      if (backHoldTimerRef.current) clearTimeout(backHoldTimerRef.current);
     };
   }, []);
 

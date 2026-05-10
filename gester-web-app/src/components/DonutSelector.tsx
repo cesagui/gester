@@ -1,7 +1,7 @@
 import React from 'react';
 import { FaBackspace } from 'react-icons/fa';
 import { IoIosCloseCircle } from 'react-icons/io';
-import { TbNumber123 } from 'react-icons/tb';
+import { TbNumber123, TbAbc } from 'react-icons/tb';
 import { MdSpaceBar } from 'react-icons/md';
 import TiltTelemetry from './TiltTelemetry';
 import MotionGraph from './MotionGraph';
@@ -9,12 +9,12 @@ import { tiltStore } from '../lib/tiltStore';
 
 // ── Sensitivity knobs ────────────────────────────────────────────────────
 // Wheel (outer sections) — pitch → section index
-const WHEEL_PITCH_RANGE_DEG = 90; // total pitch span across all wheel sections
+const WHEEL_PITCH_RANGE_DEG = 70; // total pitch span across all wheel sections
 const WHEEL_DEADZONE_DEG = 8;     // |pitch| below this → nothing selected (rest pose); flick at rest types a space
 const WHEEL_HYSTERESIS_DEG = 3;   // pitch must overshoot a boundary by this much to switch sections
 
 // Letter rectangle — pitch → subgroup index inside the active group
-const LETTER_PITCH_MAX_DEG = 30;     // ±this maps across the subgroups (smaller = more sensitive)
+const LETTER_PITCH_MAX_DEG = 35;     // ±this maps across the subgroups (smaller = more sensitive)
 const LETTER_HYSTERESIS_DEG = 2;     // pitch must overshoot a subgroup boundary by this much to switch
 const LETTER_ANCHOR_DELAY_MS = 400;  // dwell time before a subgroup locks in the rectangle
 
@@ -47,6 +47,13 @@ const SECTIONS = [
   { letters: 'RUWYPVXQZ', gradient: 'url(#gradient3)' }
 ];
 
+const NUMBER_SECTIONS = [
+  { letters: '1234', gradient: 'url(#gradient0)' },
+  { letters: '5678', gradient: 'url(#gradient1)' },
+  { letters: '90.,', gradient: 'url(#gradient2)' },
+  { letters: '!?@#', gradient: 'url(#gradient3)' },
+];
+
 const GRADIENTS = [
   { start: 'rgba(156, 163, 175, 0.4)', end: 'rgba(156, 163, 175, 0.2)', hoverStart: 'rgba(139, 92, 246, 0.85)', hoverEnd: 'rgba(99, 102, 241, 0.65)' },
   { start: 'rgba(148, 156, 168, 0.4)', end: 'rgba(148, 156, 168, 0.2)', hoverStart: 'rgba(99, 102, 241, 0.85)', hoverEnd: 'rgba(59, 130, 246, 0.65)' },
@@ -57,10 +64,10 @@ const GRADIENTS = [
 // Equal angular wedges (90° each), but sections with long letter strings
 // get a thicker donut ring (girth) so the text has more visual room
 // without crowding the wedge edge.
-const SECTION_LAYOUT = (() => {
-  const angleSpan = 360 / SECTIONS.length;
-  const pitchWidth = WHEEL_PITCH_RANGE_DEG / SECTIONS.length;
-  return SECTIONS.map((s, i) => {
+const buildSectionLayout = (sections: typeof SECTIONS) => {
+  const angleSpan = 360 / sections.length;
+  const pitchWidth = WHEEL_PITCH_RANGE_DEG / sections.length;
+  return sections.map((s, i) => {
     const isLong = s.letters.length > 5;
     return {
       angleStart: i * angleSpan,
@@ -74,7 +81,10 @@ const SECTION_LAYOUT = (() => {
       innerRadius: 65,
     };
   });
-})();
+};
+
+const SECTION_LAYOUT = buildSectionLayout(SECTIONS);
+const NUMBER_SECTION_LAYOUT = buildSectionLayout(NUMBER_SECTIONS);
 
 const splitIntoGroups = (letters: string, groupCount: number) => {
   if (!letters) return Array.from({ length: groupCount }, () => '');
@@ -105,6 +115,7 @@ export default function DonutSelector() {
   const [hoveredMenuButton, setHoveredMenuButton] = React.useState<number | null>(null);
   const [currentRoll, setCurrentRoll] = React.useState(0);
   const [isSpaceAnchored, setIsSpaceAnchored] = React.useState(false);
+  const [isNumberMode, setIsNumberMode] = React.useState(false);
 
   const showRectangleRef = React.useRef(showRectangle);
   React.useEffect(() => {
@@ -126,12 +137,18 @@ export default function DonutSelector() {
     menuModeRef.current = isMenuMode;
   }, [isMenuMode]);
 
+  const isNumberModeRef = React.useRef(isNumberMode);
+  React.useEffect(() => {
+    isNumberModeRef.current = isNumberMode;
+  }, [isNumberMode]);
+
   const openSelectedSection = (index: number) => {
+    const sections = isNumberModeRef.current ? NUMBER_SECTIONS : SECTIONS;
     setHoveredSection(index);
     setSelectedSection(index);
-    setActiveGroupStack([SECTIONS[index].letters]);
+    setActiveGroupStack([sections[index].letters]);
     setShowRectangle(true);
-    setHoveredChar(0); // Reset to first character when opening rectangle
+    setHoveredChar(0);
     setAnchoredChar(null);
   };
 
@@ -335,7 +352,8 @@ export default function DonutSelector() {
             } else if (menuIdx === 1) {
               handleBackspace();
             } else if (menuIdx === 2) {
-              console.log(`Menu button ${MENU_BUTTONS[menuIdx]} pressed`);
+              setIsNumberMode((prev) => !prev);
+              exitMenuMode();
             }
           }
         }
@@ -457,14 +475,15 @@ export default function DonutSelector() {
       const pitch = reading.pitch;
 
       if (typeof pitch === 'number' && Math.abs(pitch) >= WHEEL_DEADZONE_DEG) {
-        // Wrap pitch into [0, WHEEL_PITCH_RANGE_DEG) so values outside loop around.
-        let normalized = pitch % WHEEL_PITCH_RANGE_DEG;
-        if (normalized < 0) normalized += WHEEL_PITCH_RANGE_DEG;
+        // Shift by LETTER_PITCH_MAX_DEG so pitch=0 maps to the center of the range
+        // (same as layer 2), then wrap instead of clamp so sections cycle around.
+        let normalized = ((pitch + LETTER_PITCH_MAX_DEG) % WHEEL_PITCH_RANGE_DEG + WHEEL_PITCH_RANGE_DEG) % WHEEL_PITCH_RANGE_DEG;
 
         // Find which section's pitch slice contains `normalized`.
-        let rawNext = SECTION_LAYOUT.length - 1;
-        for (let i = 0; i < SECTION_LAYOUT.length; i++) {
-          if (normalized < SECTION_LAYOUT[i].pitchEnd) {
+        const layout = isNumberModeRef.current ? NUMBER_SECTION_LAYOUT : SECTION_LAYOUT;
+        let rawNext = layout.length - 1;
+        for (let i = 0; i < layout.length; i++) {
+          if (normalized < layout[i].pitchEnd) {
             rawNext = i;
             break;
           }
@@ -477,7 +496,7 @@ export default function DonutSelector() {
           // Hysteresis: stick to the current section until pitch is past its
           // boundary by WHEEL_HYSTERESIS_DEG. Distance is measured from the
           // center of the last section, with wrap-around.
-          const lastRange = SECTION_LAYOUT[last];
+          const lastRange = layout[last];
           let delta = normalized - lastRange.pitchCenter;
           if (delta > WHEEL_PITCH_RANGE_DEG / 2) delta -= WHEEL_PITCH_RANGE_DEG;
           if (delta < -WHEEL_PITCH_RANGE_DEG / 2) delta += WHEEL_PITCH_RANGE_DEG;
@@ -564,24 +583,6 @@ export default function DonutSelector() {
     };
   };
 
-  const createBorderPath = (startAngle: number, endAngle: number, outerRadius = 180, innerRadius = 80) => {
-    const largeArc = endAngle - startAngle > 180 ? 1 : 0;
-
-    const startAngleRad = (startAngle - 90) * Math.PI / 180;
-    const endAngleRad = (endAngle - 90) * Math.PI / 180;
-
-    const x1 = 200 + outerRadius * Math.cos(startAngleRad);
-    const y1 = 200 + outerRadius * Math.sin(startAngleRad);
-    const x2 = 200 + outerRadius * Math.cos(endAngleRad);
-    const y2 = 200 + outerRadius * Math.sin(endAngleRad);
-    const x3 = 200 + innerRadius * Math.cos(endAngleRad);
-    const y3 = 200 + innerRadius * Math.sin(endAngleRad);
-    const x4 = 200 + innerRadius * Math.cos(startAngleRad);
-    const y4 = 200 + innerRadius * Math.sin(startAngleRad);
-
-    return `M ${x1} ${y1} A ${outerRadius} ${outerRadius} 0 ${largeArc} 1 ${x2} ${y2} L ${x3} ${y3} A ${innerRadius} ${innerRadius} 0 ${largeArc} 0 ${x4} ${y4} L ${x1} ${y1}`;
-  };
-
   const createArcPath = (startAngle: number, endAngle: number, radius: number) => {
     const largeArc = endAngle - startAngle > 180 ? 1 : 0;
     const startAngleRad = (startAngle - 90) * Math.PI / 180;
@@ -596,6 +597,9 @@ export default function DonutSelector() {
   const handleSectionClick = (index: number) => {
     openSelectedSection(index);
   };
+
+  const activeSections = isNumberMode ? NUMBER_SECTIONS : SECTIONS;
+  const activeSectionLayout = isNumberMode ? NUMBER_SECTION_LAYOUT : SECTION_LAYOUT;
 
   const activeGroupLetters = activeGroupStack[activeGroupStack.length - 1] ?? '';
   const activeGroups = splitIntoGroups(activeGroupLetters, 4).filter((group) => group.length > 0);
@@ -645,14 +649,14 @@ export default function DonutSelector() {
               } else if (index === 1) {
                 handleBackspace();
               } else if (index === 2) {
-                console.log(`Menu button ${label} clicked`);
+                setIsNumberMode((prev) => !prev);
               }
             };
 
             const getIcon = () => {
               if (index === 0) return <IoIosCloseCircle size={28} />;
               if (index === 1) return <FaBackspace size={24} />;
-              if (index === 2) return <TbNumber123 size={28} />;
+              if (index === 2) return isNumberMode ? <TbAbc size={28} /> : <TbNumber123 size={28} />;
               return null;
             };
 
@@ -663,13 +667,17 @@ export default function DonutSelector() {
                 onClick={handleMenuButtonClick}
                 className="w-14 h-14 rounded-lg border flex items-center justify-center text-white/90 transition-all duration-150"
                 style={{
-                  borderColor: isMenuMode && isHovered ? 'rgba(255,255,255,0.9)' : 'rgba(255,255,255,0.25)',
+                  borderColor: isMenuMode && isHovered
+                    ? 'rgba(255,255,255,0.9)'
+                    : (index === 2 && isNumberMode ? 'rgba(251,191,36,0.7)' : 'rgba(255,255,255,0.25)'),
                   background: isMenuMode && isHovered
                     ? 'linear-gradient(135deg, rgba(255,255,255,0.32), rgba(255,255,255,0.12))'
-                    : 'linear-gradient(135deg, rgba(255,255,255,0.12), rgba(255,255,255,0.04))',
+                    : (index === 2 && isNumberMode
+                      ? 'linear-gradient(135deg, rgba(251,191,36,0.22), rgba(251,191,36,0.08))'
+                      : 'linear-gradient(135deg, rgba(255,255,255,0.12), rgba(255,255,255,0.04))'),
                   boxShadow: isMenuMode && isHovered
                     ? '0 0 18px rgba(255,255,255,0.45), 0 0 24px rgba(99,102,241,0.4)'
-                    : 'none',
+                    : (index === 2 && isNumberMode ? '0 0 12px rgba(251,191,36,0.35)' : 'none'),
                   transform: isMenuMode && isHovered ? 'scale(1.05)' : 'scale(1)',
                 }}
               >
@@ -798,13 +806,13 @@ export default function DonutSelector() {
           </filter>
         </defs>
 
-        {SECTIONS.map((section, index) => {
-          const { angleStart, angleEnd, outerRadius, innerRadius } = SECTION_LAYOUT[index];
+        {activeSections.map((section, index) => {
+          const { angleStart, angleEnd, outerRadius, innerRadius } = activeSectionLayout[index];
           const textRadius = (outerRadius + innerRadius) / 2;
           const pos = getTextPosition(angleStart, angleEnd, textRadius);
           const isHovered = hoveredSection === index;
           const isAnchored = anchoredSection === index;
-          const borderPath = createBorderPath(angleStart, angleEnd, outerRadius, innerRadius);
+          const donutPath = createDonutPath(angleStart, angleEnd, outerRadius, innerRadius);
 
           return (
             <g
@@ -815,23 +823,21 @@ export default function DonutSelector() {
               className="cursor-pointer"
             >
               <path
-                d={createDonutPath(angleStart, angleEnd, outerRadius, innerRadius)}
+                d={donutPath}
                 fill={isHovered ? `url(#gradientHover${index})` : section.gradient}
                 stroke="none"
                 style={{ transition: 'fill 0.3s ease-out' }}
               />
               <path
-                d={borderPath}
+                d={donutPath}
                 fill="none"
                 stroke="rgba(255, 255, 255, 1)"
                 strokeWidth={isAnchored ? "6" : "0.5"}
-                strokeDasharray={0}
-                strokeDashoffset={isAnchored ? 0 : 0}
                 className="pointer-events-none"
                 style={{
                   transition: isAnchored
-                    ? 'stroke-dashoffset 0.4s ease-out, stroke-width 0.2s ease-out, filter 0.3s ease-out'
-                    : 'stroke-dashoffset 0.4s ease-in, stroke-width 0.2s ease-in, filter 0.3s ease-in',
+                    ? 'stroke-width 0.2s ease-out, filter 0.3s ease-out'
+                    : 'stroke-width 0.2s ease-in, filter 0.3s ease-in',
                   filter: isAnchored
                     ? 'drop-shadow(0 0 16px rgba(255, 255, 255, 1)) drop-shadow(0 0 28px rgba(139, 92, 246, 0.7))'
                     : 'none'
@@ -884,7 +890,7 @@ export default function DonutSelector() {
         />
 
         {/* Per-section outer/inner outline arcs (replace the old single radius circles) */}
-        {SECTION_LAYOUT.map((layout, index) => (
+        {activeSectionLayout.map((layout, index) => (
           <React.Fragment key={`outline-${index}`}>
             <path
               d={createArcPath(layout.angleStart, layout.angleEnd, layout.outerRadius)}
@@ -941,28 +947,26 @@ export default function DonutSelector() {
                 const pos = getTextPosition(subStart, subEnd, subTextRadius);
                 const isHovered = hoveredChar === index;
                 const isAnchored = anchoredChar === index;
-                const borderPath = createBorderPath(subStart, subEnd, subOuter, subInner);
+                const donutPath = createDonutPath(subStart, subEnd, subOuter, subInner);
 
                 return (
                   <g key={index} className="cursor-pointer">
                     <path
-                      d={createDonutPath(subStart, subEnd, subOuter, subInner)}
+                      d={donutPath}
                       fill={isHovered ? 'url(#subgroupHover)' : 'url(#subgroupBase)'}
                       stroke="none"
                       style={{ transition: 'fill 0.3s ease-out' }}
                     />
                     <path
-                      d={borderPath}
+                      d={donutPath}
                       fill="none"
                       stroke="rgba(255, 255, 255, 1)"
                       strokeWidth={isAnchored ? '6' : '0.5'}
-                      strokeDasharray={0}
-                      strokeDashoffset={isAnchored ? 0 : 0}
                       className="pointer-events-none"
                       style={{
                         transition: isAnchored
-                          ? 'stroke-dashoffset 0.4s ease-out, stroke-width 0.2s ease-out, filter 0.3s ease-out'
-                          : 'stroke-dashoffset 0.4s ease-in, stroke-width 0.2s ease-in, filter 0.3s ease-in',
+                          ? 'stroke-width 0.2s ease-out, filter 0.3s ease-out'
+                          : 'stroke-width 0.2s ease-in, filter 0.3s ease-in',
                         filter: isAnchored
                           ? 'drop-shadow(0 0 16px rgba(255, 255, 255, 1)) drop-shadow(0 0 28px rgba(139, 92, 246, 0.7))'
                           : 'none'

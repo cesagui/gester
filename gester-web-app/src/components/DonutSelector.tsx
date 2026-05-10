@@ -12,9 +12,9 @@ const WHEEL_HYSTERESIS_DEG = 3;   // pitch must overshoot a boundary by this muc
 // Letter rectangle — pitch → subgroup index inside the active group
 const LETTER_PITCH_MAX_DEG = 30;  // ±this maps across the subgroups (smaller = more sensitive)
 
-// Magnitude flick "select" gesture (with hysteresis)
-const MAGNITUDE_ENGAGE = 750;     // rising-edge: must exceed this to fire a select
-const MAGNITUDE_REARM = 400;      // must fall below this before another select can fire
+// Magnitude flick "select" gesture
+const MAGNITUDE_ENGAGE = 400;     // rising-edge: must exceed this to fire a select
+const REARM_DELAY_MS = 200;       // cooldown after a fire before another select can register
 
 // Section "anchor" (lock current section after holding this long)
 const ANCHOR_DELAY_MS = 500;
@@ -87,17 +87,23 @@ export default function DonutSelector() {
   const anchoredSectionRef = React.useRef<number | null>(null);
   const sectionStableTimeRef = React.useRef<number | null>(null);
   const anchorTimerRef = React.useRef<ReturnType<typeof setTimeout> | null>(null);
+  const rearmTimerRef = React.useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const fireSpike = () => {
+    magnitudeTriggeredRef.current = true;
+    if (rearmTimerRef.current) clearTimeout(rearmTimerRef.current);
+    rearmTimerRef.current = setTimeout(() => {
+      magnitudeTriggeredRef.current = false;
+    }, REARM_DELAY_MS);
+  };
   React.useEffect(() => {
     return tiltStore.subscribe((reading) => {
       const isHighMagnitude = reading.magnitude >= MAGNITUDE_ENGAGE;
       const wasHighMagnitude = lastHighMagnitudeRef.current;
       lastHighMagnitudeRef.current = isHighMagnitude;
 
-      // Hysteresis: only re-arm after magnitude has fallen below the lower threshold.
-      // Prevents double-firing when the signal hovers near MAGNITUDE_ENGAGE.
-      if (reading.magnitude < MAGNITUDE_REARM) {
-        magnitudeTriggeredRef.current = false;
-      }
+      // Re-arm is now timer-based: fireSpike() schedules magnitudeTriggeredRef
+      // to flip back to false after REARM_DELAY_MS, regardless of magnitude.
 
       // Handle rectangle stage: map pitch values to subgroup selection
       if (showRectangleRef.current) {
@@ -116,9 +122,9 @@ export default function DonutSelector() {
             const clampedIdx = Math.min(Math.max(groupIdx, 0), groupCount - 1);
             setHoveredChar(clampedIdx);
 
-            // Confirm selection on a rising-edge magnitude spike (latch until it goes low)
+            // Confirm selection on a rising-edge magnitude spike
             if (isHighMagnitude && !wasHighMagnitude && !magnitudeTriggeredRef.current) {
-              magnitudeTriggeredRef.current = true;
+              fireSpike();
               const selectedGroup = availableGroups[clampedIdx];
 
               if (selectedGroup.length > 1) {
@@ -151,7 +157,7 @@ export default function DonutSelector() {
 
       // Use rising-edge magnitude to open the rectangle, but only if not already triggered
       if (isHighMagnitude && !wasHighMagnitude && !magnitudeTriggeredRef.current) {
-        magnitudeTriggeredRef.current = true;
+        fireSpike();
         const currentSection = lastTiltSectionRef.current;
         if (currentSection !== null) {
           openSelectedSection(currentSection);
@@ -230,6 +236,7 @@ export default function DonutSelector() {
   React.useEffect(() => {
     return () => {
       if (anchorTimerRef.current) clearTimeout(anchorTimerRef.current);
+      if (rearmTimerRef.current) clearTimeout(rearmTimerRef.current);
     };
   }, []);
 

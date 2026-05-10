@@ -7,6 +7,7 @@ import { tiltStore } from '../lib/tiltStore';
 // Wheel (outer sections) — pitch → section index
 const WHEEL_PITCH_RANGE_DEG = 90; // total pitch span across all wheel sections
 const WHEEL_DEADZONE_DEG = 5;     // |pitch| below this → nothing selected (rest pose)
+const WHEEL_HYSTERESIS_DEG = 3;   // pitch must overshoot a boundary by this much to switch sections
 
 // Letter rectangle — pitch → subgroup index inside the active group
 const LETTER_PITCH_MAX_DEG = 30;  // ±this maps across the subgroups (smaller = more sensitive)
@@ -55,6 +56,7 @@ export default function DonutSelector() {
   const [hoveredChar, setHoveredChar] = React.useState<number | null>(null);
   const [typedText, setTypedText] = React.useState('');
   const [activeGroupStack, setActiveGroupStack] = React.useState<string[]>([]);
+  const [anchoredSection, setAnchoredSection] = React.useState<number | null>(null);
 
   const showRectangleRef = React.useRef(showRectangle);
   React.useEffect(() => {
@@ -134,6 +136,7 @@ export default function DonutSelector() {
 
                 // Clear any anchored state/timers so wheel behaves normally
                 anchoredSectionRef.current = null;
+                setAnchoredSection(null);
                 sectionStableTimeRef.current = null;
                 if (anchorTimerRef.current) {
                   clearTimeout(anchorTimerRef.current);
@@ -167,8 +170,28 @@ export default function DonutSelector() {
         if (normalized < 0) normalized += WHEEL_PITCH_RANGE_DEG;
 
         const ratio = normalized / WHEEL_PITCH_RANGE_DEG;
-        next = Math.floor(ratio * bins);
-        if (next >= bins) next = bins - 1;
+        let rawNext = Math.floor(ratio * bins);
+        if (rawNext >= bins) rawNext = bins - 1;
+
+        const last = lastTiltSectionRef.current;
+        if (last === null || rawNext === last) {
+          next = rawNext;
+        } else {
+          // Hysteresis: stick to the current section until pitch is past the
+          // boundary by WHEEL_HYSTERESIS_DEG. Distance is measured from the
+          // center of the last section, with wrap-around.
+          const sectionWidth = WHEEL_PITCH_RANGE_DEG / bins;
+          const lastCenter = (last + 0.5) * sectionWidth;
+          let delta = normalized - lastCenter;
+          if (delta > WHEEL_PITCH_RANGE_DEG / 2) delta -= WHEEL_PITCH_RANGE_DEG;
+          if (delta < -WHEEL_PITCH_RANGE_DEG / 2) delta += WHEEL_PITCH_RANGE_DEG;
+
+          if (Math.abs(delta) >= sectionWidth / 2 + WHEEL_HYSTERESIS_DEG) {
+            next = rawNext;
+          } else {
+            next = last;
+          }
+        }
       }
 
       // If a section is anchored, only allow leaving it to move to a different section
@@ -179,6 +202,7 @@ export default function DonutSelector() {
         } else {
           // User tilted enough to leave anchored section
           anchoredSectionRef.current = null;
+          setAnchoredSection(null);
           sectionStableTimeRef.current = null;
           if (anchorTimerRef.current) clearTimeout(anchorTimerRef.current);
           // Allow the new section to be set below
@@ -197,6 +221,7 @@ export default function DonutSelector() {
         // Set timer to anchor this section after ANCHOR_DELAY_MS
         anchorTimerRef.current = setTimeout(() => {
           anchoredSectionRef.current = next;
+          setAnchoredSection(next);
         }, ANCHOR_DELAY_MS);
       }
     });
@@ -388,6 +413,7 @@ export default function DonutSelector() {
         {SECTIONS.map((section, index) => {
           const pos = getTextPosition(index);
           const isHovered = hoveredSection === index;
+          const isAnchored = anchoredSection === index;
           const borderPath = createBorderPath(index);
           const pathLength = 600;
 
@@ -408,16 +434,20 @@ export default function DonutSelector() {
               <path
                 d={borderPath}
                 fill="none"
-                stroke={isHovered ? "rgba(255, 255, 255, 0.8)" : "rgba(255, 255, 255, 0.5)"}
-                strokeWidth={isHovered ? "4" : "0.5"}
+                stroke={isAnchored ? "rgba(255, 255, 255, 1)" : isHovered ? "rgba(255, 255, 255, 0.8)" : "rgba(255, 255, 255, 0.5)"}
+                strokeWidth={isAnchored ? "6" : isHovered ? "4" : "0.5"}
                 strokeDasharray={pathLength}
                 strokeDashoffset={isHovered ? 0 : pathLength}
                 className="pointer-events-none"
                 style={{
                   transition: isHovered
-                    ? 'stroke-dashoffset 0.4s ease-out, stroke-width 0.2s ease-out, stroke 0.3s ease-out'
-                    : 'stroke-dashoffset 0.4s ease-in, stroke-width 0.2s ease-in, stroke 0.3s ease-in',
-                  filter: isHovered ? 'drop-shadow(0 0 8px rgba(255, 255, 255, 0.6))' : 'none'
+                    ? 'stroke-dashoffset 0.4s ease-out, stroke-width 0.2s ease-out, stroke 0.3s ease-out, filter 0.3s ease-out'
+                    : 'stroke-dashoffset 0.4s ease-in, stroke-width 0.2s ease-in, stroke 0.3s ease-in, filter 0.3s ease-in',
+                  filter: isAnchored
+                    ? 'drop-shadow(0 0 16px rgba(255, 255, 255, 1)) drop-shadow(0 0 28px rgba(139, 92, 246, 0.7))'
+                    : isHovered
+                      ? 'drop-shadow(0 0 8px rgba(255, 255, 255, 0.6))'
+                      : 'none'
                 }}
               />
               <text
@@ -431,7 +461,7 @@ export default function DonutSelector() {
                   letterSpacing: '0.05em',
                   fontFamily: 'Atkinson Hyperlegible, sans-serif',
                   transition: 'filter 0.3s ease-out, transform 0.3s ease-out',
-                  transform: isHovered ? 'scale(1.1)' : 'scale(1)',
+                  transform: isAnchored ? 'scale(1.2)' : isHovered ? 'scale(1.1)' : 'scale(1)',
                   transformOrigin: 'center'
                 }}
               >

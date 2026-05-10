@@ -9,12 +9,12 @@ import { tiltStore } from '../lib/tiltStore';
 
 // ── Sensitivity knobs ────────────────────────────────────────────────────
 // Wheel (outer sections) — pitch → section index
-const WHEEL_PITCH_RANGE_DEG = 70; // total pitch span across all wheel sections
+const WHEEL_PITCH_RANGE_DEG = 60; // total pitch span across all wheel sections (15° per section → S3 at -45°)
 const WHEEL_DEADZONE_DEG = 8;     // |pitch| below this → nothing selected (rest pose); flick at rest types a space
 const WHEEL_HYSTERESIS_DEG = 3;   // pitch must overshoot a boundary by this much to switch sections
 
 // Letter rectangle — pitch → subgroup index inside the active group
-const LETTER_PITCH_MAX_DEG = 35;     // ±this maps across the subgroups (smaller = more sensitive)
+const LETTER_PITCH_MAX_DEG = 30;     // ±this maps across the subgroups (smaller = more sensitive); 60° wrap matches layer 1
 const LETTER_HYSTERESIS_DEG = 2;     // pitch must overshoot a subgroup boundary by this much to switch
 const LETTER_ANCHOR_DELAY_MS = 400;  // dwell time before a subgroup locks in the rectangle
 
@@ -272,20 +272,17 @@ export default function DonutSelector() {
       const wasHighMagnitude = lastHighMagnitudeRef.current;
       lastHighMagnitudeRef.current = isHighMagnitude;
       const roll = reading.roll;
-      let filteredRoll = roll;
-      if (typeof roll === 'number') {
-        if (rollFilteredRef.current === null) rollFilteredRef.current = roll;
-        else rollFilteredRef.current = rollFilteredRef.current * (1 - ROLL_FILTER_ALPHA) + roll * ROLL_FILTER_ALPHA;
-        filteredRoll = rollFilteredRef.current as number;
+      if (rollFilteredRef.current === null) rollFilteredRef.current = roll;
+      else rollFilteredRef.current = rollFilteredRef.current * (1 - ROLL_FILTER_ALPHA) + roll * ROLL_FILTER_ALPHA;
+      const filteredRoll = rollFilteredRef.current;
 
-        if (rollVisualRef.current === null) rollVisualRef.current = roll;
-        else rollVisualRef.current = rollVisualRef.current * (1 - ROLL_VISUAL_ALPHA) + roll * ROLL_VISUAL_ALPHA;
-        setCurrentRoll(rollVisualRef.current);
-      }
+      if (rollVisualRef.current === null) rollVisualRef.current = roll;
+      else rollVisualRef.current = rollVisualRef.current * (1 - ROLL_VISUAL_ALPHA) + roll * ROLL_VISUAL_ALPHA;
+      setCurrentRoll(rollVisualRef.current);
 
       // Hold positive roll for 2s to enter menu mode (wheel stage only).
       if (!menuModeRef.current && !showRectangleRef.current) {
-          if (filteredRoll !== undefined && filteredRoll !== null && filteredRoll >= MENU_ENTER_ROLL_THRESHOLD) {
+        if (filteredRoll >= MENU_ENTER_ROLL_THRESHOLD) {
           if (!menuEnterTimerRef.current) {
             menuEnterTimerRef.current = setTimeout(() => {
               enterMenuMode();
@@ -303,7 +300,7 @@ export default function DonutSelector() {
       // Back-hold while in rectangle: hold negative roll to go back one level or exit.
       if (!menuModeRef.current && showRectangleRef.current) {
         if (activeGroupDepthRef.current >= 1) {
-          if (typeof filteredRoll === 'number' && filteredRoll <= MENU_EXIT_ROLL_THRESHOLD) {
+          if (filteredRoll <= MENU_EXIT_ROLL_THRESHOLD) {
             if (!backHoldTimerRef.current) {
               backHoldTimerRef.current = setTimeout(() => {
                 handleBack();
@@ -314,7 +311,7 @@ export default function DonutSelector() {
           } else if (backHoldTimerRef.current) {
             // Only clear the timer if roll has moved back above the threshold
             // plus a small hysteresis to avoid cancelling due to jitter.
-            if (typeof filteredRoll !== 'number' || filteredRoll > MENU_EXIT_ROLL_THRESHOLD + MENU_EXIT_HYSTERESIS_DEG) {
+            if (filteredRoll > MENU_EXIT_ROLL_THRESHOLD + MENU_EXIT_HYSTERESIS_DEG) {
               clearTimeout(backHoldTimerRef.current);
               backHoldTimerRef.current = null;
             }
@@ -335,26 +332,23 @@ export default function DonutSelector() {
           return;
         }
 
-        const pitchForMenu = reading.pitch;
-        if (typeof pitchForMenu === 'number') {
-          const PITCH_MAX = 90;
-          const clampedPitch = Math.max(-PITCH_MAX, Math.min(PITCH_MAX, pitchForMenu));
-          const ratio = (clampedPitch + PITCH_MAX) / (2 * PITCH_MAX);
-          let menuIdx = Math.floor(ratio * MENU_BUTTONS.length);
-          if (menuIdx >= MENU_BUTTONS.length) menuIdx = MENU_BUTTONS.length - 1;
-          menuIdx = Math.min(Math.max(menuIdx, 0), MENU_BUTTONS.length - 1);
-          setHoveredMenuButton(menuIdx);
+        // PITCH_MAX/3 is the threshold to switch off the middle button: at 75 the
+        // user only needs ±25° (down from ±30°) to reach clear or number.
+        const PITCH_MAX = 75;
+        const clampedPitch = Math.max(-PITCH_MAX, Math.min(PITCH_MAX, reading.pitch));
+        const ratio = (clampedPitch + PITCH_MAX) / (2 * PITCH_MAX);
+        const menuIdx = Math.min(Math.max(Math.floor(ratio * MENU_BUTTONS.length), 0), MENU_BUTTONS.length - 1);
+        setHoveredMenuButton(menuIdx);
 
-          if (isHighMagnitude && !wasHighMagnitude && !magnitudeTriggeredRef.current) {
-            fireSpike();
-            if (menuIdx === 0) {
-              handleClear();
-            } else if (menuIdx === 1) {
-              handleBackspace();
-            } else if (menuIdx === 2) {
-              setIsNumberMode((prev) => !prev);
-              exitMenuMode();
-            }
+        if (isHighMagnitude && !wasHighMagnitude && !magnitudeTriggeredRef.current) {
+          fireSpike();
+          if (menuIdx === 0) {
+            handleClear();
+          } else if (menuIdx === 1) {
+            handleBackspace();
+          } else if (menuIdx === 2) {
+            setIsNumberMode((prev) => !prev);
+            exitMenuMode();
           }
         }
 
@@ -372,22 +366,24 @@ export default function DonutSelector() {
           const availableGroups = groups.filter((group) => group.length > 0);
           const groupCount = availableGroups.length;
 
-          const pitchForGroup = reading.pitch;
-          if (typeof pitchForGroup === 'number' && groupCount > 0) {
-            const clampedPitch = Math.max(-LETTER_PITCH_MAX_DEG, Math.min(LETTER_PITCH_MAX_DEG, pitchForGroup));
-            const ratio = (clampedPitch + LETTER_PITCH_MAX_DEG) / (2 * LETTER_PITCH_MAX_DEG);
-            let rawIdx = Math.floor(ratio * groupCount);
-            if (rawIdx >= groupCount) rawIdx = groupCount - 1;
-            rawIdx = Math.min(Math.max(rawIdx, 0), groupCount - 1);
+          if (groupCount > 0) {
+            // Same wrap + direction convention as layer 1: negative pitch goes
+            // clockwise from subgroup 0, positive pitch goes counter-clockwise.
+            const wrapRange = 2 * LETTER_PITCH_MAX_DEG;
+            const subWidth = wrapRange / groupCount;
+            const normalized = (((-reading.pitch) % wrapRange) + wrapRange) % wrapRange;
+            const rawIdx = Math.min(Math.floor(normalized / subWidth), groupCount - 1);
 
             // Hysteresis: stick to the current subgroup until pitch overshoots
-            // its boundary by LETTER_HYSTERESIS_DEG.
-            const subWidth = (2 * LETTER_PITCH_MAX_DEG) / groupCount;
+            // its boundary by LETTER_HYSTERESIS_DEG. Wrap-aware delta.
             const lastChar = lastCharIdxRef.current;
             let clampedIdx = rawIdx;
             if (lastChar !== null && rawIdx !== lastChar && lastChar < groupCount) {
-              const lastCenter = -LETTER_PITCH_MAX_DEG + (lastChar + 0.5) * subWidth;
-              if (Math.abs(clampedPitch - lastCenter) < subWidth / 2 + LETTER_HYSTERESIS_DEG) {
+              const lastCenter = (lastChar + 0.5) * subWidth;
+              let delta = normalized - lastCenter;
+              if (delta > wrapRange / 2) delta -= wrapRange;
+              if (delta < -wrapRange / 2) delta += wrapRange;
+              if (Math.abs(delta) < subWidth / 2 + LETTER_HYSTERESIS_DEG) {
                 clampedIdx = lastChar;
               }
             }
@@ -474,10 +470,11 @@ export default function DonutSelector() {
       let next: number | null = null;
       const pitch = reading.pitch;
 
-      if (typeof pitch === 'number' && Math.abs(pitch) >= WHEEL_DEADZONE_DEG) {
-        // Shift by LETTER_PITCH_MAX_DEG so pitch=0 maps to the center of the range
-        // (same as layer 2), then wrap instead of clamp so sections cycle around.
-        let normalized = ((pitch + LETTER_PITCH_MAX_DEG) % WHEEL_PITCH_RANGE_DEG + WHEEL_PITCH_RANGE_DEG) % WHEEL_PITCH_RANGE_DEG;
+      if (Math.abs(pitch) >= WHEEL_DEADZONE_DEG) {
+        // Rest pose sits just before ETAO. Negative pitch advances clockwise
+        // (ETAO → INSH → DLC → RUW); positive pitch goes counter-clockwise.
+        // Both directions wrap.
+        let normalized = (((-pitch) % WHEEL_PITCH_RANGE_DEG) + WHEEL_PITCH_RANGE_DEG) % WHEEL_PITCH_RANGE_DEG;
 
         // Find which section's pitch slice contains `normalized`.
         const layout = isNumberModeRef.current ? NUMBER_SECTION_LAYOUT : SECTION_LAYOUT;

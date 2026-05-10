@@ -34,7 +34,8 @@ const MENU_BUTTONS = ['1', '2', '3'];
 // Suggestion menu (right side) — mirrors the left menu but for Claude word completions
 const SUGGEST_SLOT_COUNT = 3;
 const SUGGEST_ENTER_HOLD_MS = 1500; // hold negative roll this long to open the suggest menu
-const COMPLETIONS_ENDPOINT = 'http://localhost:3000/complete';
+// Dev hits the local Hono server (`npm run dev` in /jester); prod hits the Vercel function at /api/complete.
+const COMPLETIONS_ENDPOINT = import.meta.env.DEV ? 'http://localhost:3000/complete' : '/api/complete';
 const COMPLETIONS_DEBOUNCE_MS = 250;
 
 async function fetchCompletions(buffer: string, signal: AbortSignal): Promise<string[]> {
@@ -154,8 +155,10 @@ export default function DonutSelector() {
   const [isSpaceAnchored, setIsSpaceAnchored] = React.useState(false);
   const [isNumberMode, setIsNumberMode] = React.useState(false);
   const [isSuggestMode, setIsSuggestMode] = React.useState(false);
-  const [suggestions, setSuggestions] = React.useState<string[]>([]);
+  const [replaceSuggestions, setReplaceSuggestions] = React.useState<string[]>([]);
+  const [appendSuggestions, setAppendSuggestions] = React.useState<string[]>([]);
   const [hoveredSuggestion, setHoveredSuggestion] = React.useState<number | null>(null);
+  const [suggestColumn, setSuggestColumn] = React.useState<0 | 1>(0); // 0 = replace, 1 = append
 
   const showRectangleRef = React.useRef(showRectangle);
   React.useEffect(() => {
@@ -182,13 +185,24 @@ export default function DonutSelector() {
     suggestModeRef.current = isSuggestMode;
   }, [isSuggestMode]);
 
-  const suggestionsRef = React.useRef<string[]>(suggestions);
+  const replaceSuggestionsRef = React.useRef<string[]>(replaceSuggestions);
   React.useEffect(() => {
-    suggestionsRef.current = suggestions;
-  }, [suggestions]);
+    replaceSuggestionsRef.current = replaceSuggestions;
+  }, [replaceSuggestions]);
+
+  const appendSuggestionsRef = React.useRef<string[]>(appendSuggestions);
+  React.useEffect(() => {
+    appendSuggestionsRef.current = appendSuggestions;
+  }, [appendSuggestions]);
+
+  const suggestColumnRef = React.useRef<0 | 1>(suggestColumn);
+  React.useEffect(() => {
+    suggestColumnRef.current = suggestColumn;
+  }, [suggestColumn]);
 
   const suggestEnterTimerRef = React.useRef<ReturnType<typeof setTimeout> | null>(null);
-  const completionsAbortRef = React.useRef<AbortController | null>(null);
+  const completionsReplaceAbortRef = React.useRef<AbortController | null>(null);
+  const completionsAppendAbortRef = React.useRef<AbortController | null>(null);
   const completionsDebounceRef = React.useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const isNumberModeRef = React.useRef(isNumberMode);
@@ -302,6 +316,9 @@ export default function DonutSelector() {
     if (suggestModeRef.current) return;
     setIsSuggestMode(true);
     setHoveredSuggestion(0);
+    // Negative-roll hold got us here, so default to the replace column.
+    suggestColumnRef.current = 0;
+    setSuggestColumn(0);
 
     setShowRectangle(false);
     setSelectedSection(null);
@@ -343,15 +360,14 @@ export default function DonutSelector() {
     backCooldownUntilRef.current = Date.now() + 500;
   };
 
-  const applySuggestion = (word: string) => {
+  const applyReplace = (word: string) => {
+    if (!word) return;
+    setTypedText((prev) => prev.replace(/\S*$/, '') + word + ' ');
+  };
+
+  const applyAppend = (word: string) => {
     if (!word) return;
     setTypedText((prev) => {
-      const partial = prev.match(/\S*$/)?.[0] ?? '';
-      // If the suggestion completes the current partial word → replace it.
-      // Otherwise (Claude returned a follow-up word like "cesar" → "salad") → append it.
-      if (partial && word.toLowerCase().startsWith(partial.toLowerCase())) {
-        return prev.slice(0, prev.length - partial.length) + word + ' ';
-      }
       const sep = prev.length > 0 && !/\s$/.test(prev) ? ' ' : '';
       return prev + sep + word + ' ';
     });
@@ -457,7 +473,8 @@ export default function DonutSelector() {
         backHoldTimerRef.current = null;
       }
 
-      // Suggest mode: pitch chooses slot, flick types the word, positive roll exits.
+      // Suggest mode: pitch chooses row, roll-sign chooses column (replace/append),
+      // flick applies, positive roll past the threshold exits.
       if (suggestModeRef.current) {
         if (roll >= MENU_ENTER_ROLL_THRESHOLD) {
           exitSuggestMode();
@@ -469,11 +486,22 @@ export default function DonutSelector() {
         const idx = Math.min(Math.max(Math.floor(ratio * SUGGEST_SLOT_COUNT), 0), SUGGEST_SLOT_COUNT - 1);
         setHoveredSuggestion(idx);
 
+        // Roll-sign picks the column. Small deadzone around 0 to avoid jitter.
+        const ROLL_COLUMN_DEADZONE = 8;
+        const targetCol: 0 | 1 | null =
+          roll > ROLL_COLUMN_DEADZONE ? 1 : roll < -ROLL_COLUMN_DEADZONE ? 0 : null;
+        if (targetCol !== null && targetCol !== suggestColumnRef.current) {
+          suggestColumnRef.current = targetCol;
+          setSuggestColumn(targetCol);
+        }
+
         if (isHighMagnitude && !wasHighMagnitude && !magnitudeTriggeredRef.current) {
           fireSpike();
-          const word = suggestionsRef.current[idx];
+          const col = suggestColumnRef.current;
+          const word = (col === 0 ? replaceSuggestionsRef.current : appendSuggestionsRef.current)[idx];
           if (word) {
-            applySuggestion(word);
+            if (col === 0) applyReplace(word);
+            else applyAppend(word);
             exitSuggestMode();
           }
         }
@@ -714,36 +742,49 @@ export default function DonutSelector() {
       if (backHoldTimerRef.current) clearTimeout(backHoldTimerRef.current);
       if (suggestEnterTimerRef.current) clearTimeout(suggestEnterTimerRef.current);
       if (completionsDebounceRef.current) clearTimeout(completionsDebounceRef.current);
-      completionsAbortRef.current?.abort();
+      completionsReplaceAbortRef.current?.abort();
+      completionsAppendAbortRef.current?.abort();
     };
   }, []);
 
   React.useEffect(() => {
     if (completionsDebounceRef.current) clearTimeout(completionsDebounceRef.current);
 
-    // Only fetch when we're mid-word (last char is non-whitespace).
-    // Empty buffer or trailing whitespace → no suggestions (would be next-word, not completions).
-    if (!/\S$/.test(typedText)) {
-      completionsAbortRef.current?.abort();
-      setSuggestions([]);
+    // Empty buffer → nothing to suggest.
+    if (typedText.length === 0) {
+      completionsReplaceAbortRef.current?.abort();
+      completionsAppendAbortRef.current?.abort();
+      setReplaceSuggestions([]);
+      setAppendSuggestions([]);
       return;
     }
 
+    const midWord = /\S$/.test(typedText);
+    // Append column always reflects "what comes next" — sent with a trailing space.
+    const appendBuffer = midWord ? typedText + ' ' : typedText;
+
     completionsDebounceRef.current = setTimeout(() => {
-      completionsAbortRef.current?.abort();
-      const ac = new AbortController();
-      completionsAbortRef.current = ac;
-      fetchCompletions(typedText, ac.signal)
-        .then((sugs) => {
-          if (!ac.signal.aborted) {
-            console.log('[completions]', sugs);
-            setSuggestions(sugs);
-          }
-        })
-        .catch((err) => {
-          if (err?.name !== 'AbortError') console.error('[completions]', err);
-        });
+      // Replace column: only meaningful mid-word — completions of the partial word.
+      completionsReplaceAbortRef.current?.abort();
+      if (midWord) {
+        const acReplace = new AbortController();
+        completionsReplaceAbortRef.current = acReplace;
+        fetchCompletions(typedText, acReplace.signal)
+          .then((sugs) => { if (!acReplace.signal.aborted) setReplaceSuggestions(sugs); })
+          .catch((err) => { if (err?.name !== 'AbortError') console.error('[completions:replace]', err); });
+      } else {
+        setReplaceSuggestions([]);
+      }
+
+      // Append column: next-word suggestions.
+      completionsAppendAbortRef.current?.abort();
+      const acAppend = new AbortController();
+      completionsAppendAbortRef.current = acAppend;
+      fetchCompletions(appendBuffer, acAppend.signal)
+        .then((sugs) => { if (!acAppend.signal.aborted) setAppendSuggestions(sugs); })
+        .catch((err) => { if (err?.name !== 'AbortError') console.error('[completions:append]', err); });
     }, COMPLETIONS_DEBOUNCE_MS);
+
     return () => {
       if (completionsDebounceRef.current) clearTimeout(completionsDebounceRef.current);
     };
@@ -894,37 +935,57 @@ export default function DonutSelector() {
                 ? '0 0 28px rgba(59, 130, 246, 0.45), 0 10px 24px rgba(0, 0, 0, 0.35)'
                 : '0 8px 20px rgba(0, 0, 0, 0.25)',
               transition: 'background 0.25s ease, box-shadow 0.25s ease',
+              fontFamily: 'Atkinson Hyperlegible, sans-serif',
             }}
           >
-            {Array.from({ length: SUGGEST_SLOT_COUNT }).map((_, index) => {
-              const word = suggestions[index] ?? '';
-              const isHovered = hoveredSuggestion === index;
-              const handleClick = () => applySuggestion(word);
-              return (
-                <button
-                  key={index}
-                  type="button"
-                  onClick={handleClick}
-                  disabled={!word}
-                  className="min-w-[7rem] h-14 px-3 rounded-lg border flex items-center justify-center text-white/90 transition-all duration-150 disabled:opacity-40"
-                  style={{
-                    borderColor: isSuggestMode && isHovered
-                      ? 'rgba(255,255,255,0.9)'
-                      : 'rgba(255,255,255,0.25)',
-                    background: isSuggestMode && isHovered
-                      ? 'linear-gradient(135deg, rgba(255,255,255,0.32), rgba(255,255,255,0.12))'
-                      : 'linear-gradient(135deg, rgba(255,255,255,0.12), rgba(255,255,255,0.04))',
-                    boxShadow: isSuggestMode && isHovered
-                      ? '0 0 18px rgba(255,255,255,0.45), 0 0 24px rgba(59,130,246,0.4)'
-                      : 'none',
-                    transform: isSuggestMode && isHovered ? 'scale(1.05)' : 'scale(1)',
-                    fontFamily: 'Atkinson Hyperlegible, sans-serif',
-                  }}
-                >
-                  <span className="text-sm font-medium truncate">{word || '—'}</span>
-                </button>
-              );
-            })}
+            <div className="flex gap-2 px-1 select-none">
+              {(['replace', 'append'] as const).map((label, col) => {
+                const isActiveCol = isSuggestMode && suggestColumn === col;
+                return (
+                  <div
+                    key={label}
+                    className="w-28 text-center text-[10px] uppercase tracking-wider"
+                    style={{
+                      color: isActiveCol ? 'rgba(255,255,255,0.95)' : 'rgba(255,255,255,0.5)',
+                      transition: 'color 0.2s ease',
+                    }}
+                  >
+                    {label}
+                  </div>
+                );
+              })}
+            </div>
+            {Array.from({ length: SUGGEST_SLOT_COUNT }).map((_, row) => (
+              <div key={row} className="flex gap-2">
+                {([0, 1] as const).map((col) => {
+                  const word = (col === 0 ? replaceSuggestions : appendSuggestions)[row] ?? '';
+                  const isHovered =
+                    isSuggestMode && hoveredSuggestion === row && suggestColumn === col;
+                  const handleClick = () => (col === 0 ? applyReplace(word) : applyAppend(word));
+                  return (
+                    <button
+                      key={col}
+                      type="button"
+                      onClick={handleClick}
+                      disabled={!word}
+                      className="w-28 h-12 px-2 rounded-lg border flex items-center justify-center text-white/90 transition-all duration-150 disabled:opacity-40"
+                      style={{
+                        borderColor: isHovered ? 'rgba(255,255,255,0.9)' : 'rgba(255,255,255,0.25)',
+                        background: isHovered
+                          ? 'linear-gradient(135deg, rgba(255,255,255,0.32), rgba(255,255,255,0.12))'
+                          : 'linear-gradient(135deg, rgba(255,255,255,0.12), rgba(255,255,255,0.04))',
+                        boxShadow: isHovered
+                          ? '0 0 18px rgba(255,255,255,0.45), 0 0 24px rgba(59,130,246,0.4)'
+                          : 'none',
+                        transform: isHovered ? 'scale(1.05)' : 'scale(1)',
+                      }}
+                    >
+                      <span className="text-sm font-medium truncate">{word || '—'}</span>
+                    </button>
+                  );
+                })}
+              </div>
+            ))}
           </div>
         </div>
       )}

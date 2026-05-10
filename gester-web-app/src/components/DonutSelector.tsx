@@ -3,6 +3,7 @@ import { FaBackspace } from 'react-icons/fa';
 import { IoIosCloseCircle } from 'react-icons/io';
 import { TbNumber123, TbAbc } from 'react-icons/tb';
 import { MdSpaceBar } from 'react-icons/md';
+import TiltTelemetry from './TiltTelemetry';
 import MotionGraph from './MotionGraph';
 import { tiltStore } from '../lib/tiltStore';
 
@@ -784,6 +785,8 @@ export default function DonutSelector() {
 
   return (
     <div className="min-h-screen w-full bg-linear-to-br from-slate-900 via-slate-800 to-slate-900 relative overflow-hidden">
+      <TiltTelemetry />
+
       <div className="absolute top-[254px] right-[calc(50%+250px)] -translate-y-1/2 z-30">
         <div
           className="backdrop-blur-md border border-white/30 rounded-xl p-2 flex flex-col gap-2"

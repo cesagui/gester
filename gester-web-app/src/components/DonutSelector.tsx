@@ -10,7 +10,9 @@ const WHEEL_DEADZONE_DEG = 5;     // |pitch| below this → nothing selected (re
 const WHEEL_HYSTERESIS_DEG = 3;   // pitch must overshoot a boundary by this much to switch sections
 
 // Letter rectangle — pitch → subgroup index inside the active group
-const LETTER_PITCH_MAX_DEG = 30;  // ±this maps across the subgroups (smaller = more sensitive)
+const LETTER_PITCH_MAX_DEG = 30;     // ±this maps across the subgroups (smaller = more sensitive)
+const LETTER_HYSTERESIS_DEG = 2;     // pitch must overshoot a subgroup boundary by this much to switch
+const LETTER_ANCHOR_DELAY_MS = 400;  // dwell time before a subgroup locks in the rectangle
 
 // Magnitude flick "select" gesture
 const MAGNITUDE_ENGAGE = 400;     // rising-edge: must exceed this to fire a select
@@ -57,6 +59,7 @@ export default function DonutSelector() {
   const [typedText, setTypedText] = React.useState('');
   const [activeGroupStack, setActiveGroupStack] = React.useState<string[]>([]);
   const [anchoredSection, setAnchoredSection] = React.useState<number | null>(null);
+  const [anchoredChar, setAnchoredChar] = React.useState<number | null>(null);
 
   const showRectangleRef = React.useRef(showRectangle);
   React.useEffect(() => {
@@ -88,6 +91,20 @@ export default function DonutSelector() {
   const sectionStableTimeRef = React.useRef<number | null>(null);
   const anchorTimerRef = React.useRef<ReturnType<typeof setTimeout> | null>(null);
   const rearmTimerRef = React.useRef<ReturnType<typeof setTimeout> | null>(null);
+  const lastCharIdxRef = React.useRef<number | null>(null);
+  const anchoredCharRef = React.useRef<number | null>(null);
+  const charAnchorTimerRef = React.useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  // Reset char tracking whenever the active group changes (entering rectangle, drilling deeper, exit)
+  React.useEffect(() => {
+    lastCharIdxRef.current = null;
+    anchoredCharRef.current = null;
+    setAnchoredChar(null);
+    if (charAnchorTimerRef.current) {
+      clearTimeout(charAnchorTimerRef.current);
+      charAnchorTimerRef.current = null;
+    }
+  }, [activeGroupStack]);
 
   const fireSpike = () => {
     magnitudeTriggeredRef.current = true;
@@ -117,15 +134,51 @@ export default function DonutSelector() {
           if (typeof pitchForGroup === 'number' && groupCount > 0) {
             const clampedPitch = Math.max(-LETTER_PITCH_MAX_DEG, Math.min(LETTER_PITCH_MAX_DEG, pitchForGroup));
             const ratio = (clampedPitch + LETTER_PITCH_MAX_DEG) / (2 * LETTER_PITCH_MAX_DEG);
-            let groupIdx = Math.floor(ratio * groupCount);
-            if (groupIdx >= groupCount) groupIdx = groupCount - 1;
-            const clampedIdx = Math.min(Math.max(groupIdx, 0), groupCount - 1);
-            setHoveredChar(clampedIdx);
+            let rawIdx = Math.floor(ratio * groupCount);
+            if (rawIdx >= groupCount) rawIdx = groupCount - 1;
+            rawIdx = Math.min(Math.max(rawIdx, 0), groupCount - 1);
+
+            // Hysteresis: stick to the current subgroup until pitch overshoots
+            // its boundary by LETTER_HYSTERESIS_DEG.
+            const subWidth = (2 * LETTER_PITCH_MAX_DEG) / groupCount;
+            const lastChar = lastCharIdxRef.current;
+            let clampedIdx = rawIdx;
+            if (lastChar !== null && rawIdx !== lastChar && lastChar < groupCount) {
+              const lastCenter = -LETTER_PITCH_MAX_DEG + (lastChar + 0.5) * subWidth;
+              if (Math.abs(clampedPitch - lastCenter) < subWidth / 2 + LETTER_HYSTERESIS_DEG) {
+                clampedIdx = lastChar;
+              }
+            }
+
+            // Update hovered + restart anchor timer on actual change
+            if (clampedIdx !== lastCharIdxRef.current) {
+              lastCharIdxRef.current = clampedIdx;
+              setHoveredChar(clampedIdx);
+
+              if (anchoredCharRef.current !== null) {
+                anchoredCharRef.current = null;
+                setAnchoredChar(null);
+              }
+              if (charAnchorTimerRef.current) clearTimeout(charAnchorTimerRef.current);
+              charAnchorTimerRef.current = setTimeout(() => {
+                anchoredCharRef.current = clampedIdx;
+                setAnchoredChar(clampedIdx);
+              }, LETTER_ANCHOR_DELAY_MS);
+            }
 
             // Confirm selection on a rising-edge magnitude spike
             if (isHighMagnitude && !wasHighMagnitude && !magnitudeTriggeredRef.current) {
               fireSpike();
               const selectedGroup = availableGroups[clampedIdx];
+
+              // Clear letter anchor + timer
+              anchoredCharRef.current = null;
+              setAnchoredChar(null);
+              if (charAnchorTimerRef.current) {
+                clearTimeout(charAnchorTimerRef.current);
+                charAnchorTimerRef.current = null;
+              }
+              lastCharIdxRef.current = null;
 
               if (selectedGroup.length > 1) {
                 setActiveGroupStack((prev) => [...prev, selectedGroup]);
@@ -237,6 +290,7 @@ export default function DonutSelector() {
     return () => {
       if (anchorTimerRef.current) clearTimeout(anchorTimerRef.current);
       if (rearmTimerRef.current) clearTimeout(rearmTimerRef.current);
+      if (charAnchorTimerRef.current) clearTimeout(charAnchorTimerRef.current);
     };
   }, []);
 
@@ -522,6 +576,7 @@ export default function DonutSelector() {
               {activeGroups.map((group, index) => {
                 const pos = getTextPosition(index);
                 const isHovered = hoveredChar === index;
+                const isAnchored = anchoredChar === index;
                 const borderPath = createBorderPath(index);
                 const pathLength = 600;
 
@@ -536,16 +591,20 @@ export default function DonutSelector() {
                     <path
                       d={borderPath}
                       fill="none"
-                      stroke={isHovered ? 'rgba(255, 255, 255, 0.85)' : 'rgba(255, 255, 255, 0.45)'}
-                      strokeWidth={isHovered ? '4' : '0.5'}
+                      stroke={isAnchored ? 'rgba(255, 255, 255, 1)' : isHovered ? 'rgba(255, 255, 255, 0.85)' : 'rgba(255, 255, 255, 0.45)'}
+                      strokeWidth={isAnchored ? '6' : isHovered ? '4' : '0.5'}
                       strokeDasharray={pathLength}
                       strokeDashoffset={isHovered ? 0 : pathLength}
                       className="pointer-events-none"
                       style={{
                         transition: isHovered
-                          ? 'stroke-dashoffset 0.4s ease-out, stroke-width 0.2s ease-out, stroke 0.3s ease-out'
-                          : 'stroke-dashoffset 0.4s ease-in, stroke-width 0.2s ease-in, stroke 0.3s ease-in',
-                        filter: isHovered ? 'drop-shadow(0 0 8px rgba(255, 255, 255, 0.6))' : 'none'
+                          ? 'stroke-dashoffset 0.4s ease-out, stroke-width 0.2s ease-out, stroke 0.3s ease-out, filter 0.3s ease-out'
+                          : 'stroke-dashoffset 0.4s ease-in, stroke-width 0.2s ease-in, stroke 0.3s ease-in, filter 0.3s ease-in',
+                        filter: isAnchored
+                          ? 'drop-shadow(0 0 16px rgba(255, 255, 255, 1)) drop-shadow(0 0 28px rgba(139, 92, 246, 0.7))'
+                          : isHovered
+                            ? 'drop-shadow(0 0 8px rgba(255, 255, 255, 0.6))'
+                            : 'none'
                       }}
                     />
                     {group.length > 0 && (
@@ -560,7 +619,7 @@ export default function DonutSelector() {
                           letterSpacing: '0.05em',
                           fontFamily: 'Atkinson Hyperlegible, sans-serif',
                           transition: 'filter 0.3s ease-out, transform 0.3s ease-out',
-                          transform: isHovered ? 'scale(1.1)' : 'scale(1)',
+                          transform: isAnchored ? 'scale(1.2)' : isHovered ? 'scale(1.1)' : 'scale(1)',
                           transformOrigin: 'center'
                         }}
                       >

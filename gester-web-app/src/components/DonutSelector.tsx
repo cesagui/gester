@@ -18,6 +18,12 @@ const LETTER_ANCHOR_DELAY_MS = 400;  // dwell time before a subgroup locks in th
 const MAGNITUDE_ENGAGE = 400;     // rising-edge: must exceed this to fire a select
 const REARM_DELAY_MS = 200;       // cooldown after a fire before another select can register
 
+// Sidebar menu mode
+const MENU_ENTER_ROLL_THRESHOLD = 50;
+const MENU_EXIT_ROLL_THRESHOLD = -50;
+const MENU_ENTER_HOLD_MS = 2000;
+const MENU_BUTTONS = ['1', '2', '3'];
+
 // Section "anchor" (lock current section after holding this long)
 const ANCHOR_DELAY_MS = 500;
 
@@ -60,6 +66,8 @@ export default function DonutSelector() {
   const [activeGroupStack, setActiveGroupStack] = React.useState<string[]>([]);
   const [anchoredSection, setAnchoredSection] = React.useState<number | null>(null);
   const [anchoredChar, setAnchoredChar] = React.useState<number | null>(null);
+  const [isMenuMode, setIsMenuMode] = React.useState(false);
+  const [hoveredMenuButton, setHoveredMenuButton] = React.useState<number | null>(null);
 
   const showRectangleRef = React.useRef(showRectangle);
   React.useEffect(() => {
@@ -76,12 +84,18 @@ export default function DonutSelector() {
     activeGroupRef.current = activeGroupStack[activeGroupStack.length - 1] ?? '';
   }, [activeGroupStack]);
 
+  const menuModeRef = React.useRef(isMenuMode);
+  React.useEffect(() => {
+    menuModeRef.current = isMenuMode;
+  }, [isMenuMode]);
+
   const openSelectedSection = (index: number) => {
     setHoveredSection(index);
     setSelectedSection(index);
     setActiveGroupStack([SECTIONS[index].letters]);
     setShowRectangle(true);
     setHoveredChar(0); // Reset to first character when opening rectangle
+    setAnchoredChar(null);
   };
 
   const lastTiltSectionRef = React.useRef<number | null>(null);
@@ -91,6 +105,7 @@ export default function DonutSelector() {
   const sectionStableTimeRef = React.useRef<number | null>(null);
   const anchorTimerRef = React.useRef<ReturnType<typeof setTimeout> | null>(null);
   const rearmTimerRef = React.useRef<ReturnType<typeof setTimeout> | null>(null);
+  const menuEnterTimerRef = React.useRef<ReturnType<typeof setTimeout> | null>(null);
   const lastCharIdxRef = React.useRef<number | null>(null);
   const anchoredCharRef = React.useRef<number | null>(null);
   const charAnchorTimerRef = React.useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -99,7 +114,6 @@ export default function DonutSelector() {
   React.useEffect(() => {
     lastCharIdxRef.current = null;
     anchoredCharRef.current = null;
-    setAnchoredChar(null);
     if (charAnchorTimerRef.current) {
       clearTimeout(charAnchorTimerRef.current);
       charAnchorTimerRef.current = null;
@@ -113,11 +127,131 @@ export default function DonutSelector() {
       magnitudeTriggeredRef.current = false;
     }, REARM_DELAY_MS);
   };
+
+  const enterMenuMode = () => {
+    if (menuModeRef.current) return;
+
+    setIsMenuMode(true);
+    setHoveredMenuButton(0);
+
+    // Exit wheel/letter selection UI when menu mode opens
+    setShowRectangle(false);
+    setSelectedSection(null);
+    setHoveredSection(null);
+    setHoveredChar(null);
+    setActiveGroupStack([]);
+
+    // Clear anchors/timers so returning to the wheel starts cleanly
+    anchoredSectionRef.current = null;
+    setAnchoredSection(null);
+    sectionStableTimeRef.current = null;
+    if (anchorTimerRef.current) {
+      clearTimeout(anchorTimerRef.current);
+      anchorTimerRef.current = null;
+    }
+    anchoredCharRef.current = null;
+    setAnchoredChar(null);
+    if (charAnchorTimerRef.current) {
+      clearTimeout(charAnchorTimerRef.current);
+      charAnchorTimerRef.current = null;
+    }
+    lastCharIdxRef.current = null;
+
+    if (menuEnterTimerRef.current) {
+      clearTimeout(menuEnterTimerRef.current);
+      menuEnterTimerRef.current = null;
+    }
+  };
+
+  const exitMenuMode = () => {
+    if (!menuModeRef.current) return;
+    setIsMenuMode(false);
+    setHoveredMenuButton(null);
+
+    if (menuEnterTimerRef.current) {
+      clearTimeout(menuEnterTimerRef.current);
+      menuEnterTimerRef.current = null;
+    }
+  };
+
+  const handleBackspace = () => {
+    setTypedText((prev) => prev.slice(0, -1));
+  };
+
+  const handleClear = () => {
+    setTypedText('');
+  };
+
+  const handleBack = () => {
+    if (activeGroupStack.length > 1) {
+      setActiveGroupStack((prev) => prev.slice(0, -1));
+      setHoveredChar(0);
+      setAnchoredChar(null);
+      return;
+    }
+
+    setShowRectangle(false);
+    setSelectedSection(null);
+    setHoveredSection(null);
+    setHoveredChar(null);
+    setActiveGroupStack([]);
+  };
+
   React.useEffect(() => {
     return tiltStore.subscribe((reading) => {
       const isHighMagnitude = reading.magnitude >= MAGNITUDE_ENGAGE;
       const wasHighMagnitude = lastHighMagnitudeRef.current;
       lastHighMagnitudeRef.current = isHighMagnitude;
+      const roll = reading.roll;
+
+      // Hold positive roll for 2s to enter menu mode (wheel stage only).
+      if (!menuModeRef.current && !showRectangleRef.current) {
+        if (roll >= MENU_ENTER_ROLL_THRESHOLD) {
+          if (!menuEnterTimerRef.current) {
+            menuEnterTimerRef.current = setTimeout(() => {
+              enterMenuMode();
+            }, MENU_ENTER_HOLD_MS);
+          }
+        } else if (menuEnterTimerRef.current) {
+          clearTimeout(menuEnterTimerRef.current);
+          menuEnterTimerRef.current = null;
+        }
+      } else if (menuEnterTimerRef.current) {
+        clearTimeout(menuEnterTimerRef.current);
+        menuEnterTimerRef.current = null;
+      }
+
+      // Menu mode: pitch chooses button, flick presses, negative roll exits.
+      if (menuModeRef.current) {
+        if (roll <= MENU_EXIT_ROLL_THRESHOLD) {
+          exitMenuMode();
+          return;
+        }
+
+        const pitchForMenu = reading.pitch;
+        if (typeof pitchForMenu === 'number') {
+          const PITCH_MAX = 90;
+          const clampedPitch = Math.max(-PITCH_MAX, Math.min(PITCH_MAX, pitchForMenu));
+          const ratio = (clampedPitch + PITCH_MAX) / (2 * PITCH_MAX);
+          let menuIdx = Math.floor(ratio * MENU_BUTTONS.length);
+          if (menuIdx >= MENU_BUTTONS.length) menuIdx = MENU_BUTTONS.length - 1;
+          menuIdx = Math.min(Math.max(menuIdx, 0), MENU_BUTTONS.length - 1);
+          setHoveredMenuButton(menuIdx);
+
+          if (isHighMagnitude && !wasHighMagnitude && !magnitudeTriggeredRef.current) {
+            fireSpike();
+            if (menuIdx === 0) {
+              handleClear();
+            } else if (menuIdx === 1) {
+              handleBackspace();
+            } else if (menuIdx === 2) {
+              console.log(`Menu button ${MENU_BUTTONS[menuIdx]} pressed`);
+            }
+          }
+        }
+
+        return;
+      }
 
       // Re-arm is now timer-based: fireSpike() schedules magnitudeTriggeredRef
       // to flip back to false after REARM_DELAY_MS, regardless of magnitude.
@@ -183,6 +317,7 @@ export default function DonutSelector() {
               if (selectedGroup.length > 1) {
                 setActiveGroupStack((prev) => [...prev, selectedGroup]);
                 setHoveredChar(0);
+                setAnchoredChar(null);
               } else {
                 setTypedText((prev) => prev + selectedGroup);
 
@@ -291,11 +426,12 @@ export default function DonutSelector() {
       if (anchorTimerRef.current) clearTimeout(anchorTimerRef.current);
       if (rearmTimerRef.current) clearTimeout(rearmTimerRef.current);
       if (charAnchorTimerRef.current) clearTimeout(charAnchorTimerRef.current);
+      if (menuEnterTimerRef.current) clearTimeout(menuEnterTimerRef.current);
     };
   }, []);
 
-  const createDonutPath = (index: number) => {
-    const anglePerSection = 360 / SECTIONS.length;
+  const createDonutPath = (index: number, totalSections: number = SECTIONS.length) => {
+    const anglePerSection = 360 / totalSections;
     const startAngle = index * anglePerSection;
     const endAngle = startAngle + anglePerSection;
     const outerRadius = 180;
@@ -316,8 +452,8 @@ export default function DonutSelector() {
     return `M ${x1} ${y1} A ${outerRadius} ${outerRadius} 0 0 1 ${x2} ${y2} L ${x3} ${y3} A ${innerRadius} ${innerRadius} 0 0 0 ${x4} ${y4} Z`;
   };
 
-  const getTextPosition = (index: number) => {
-    const anglePerSection = 360 / SECTIONS.length;
+  const getTextPosition = (index: number, totalSections: number = SECTIONS.length) => {
+    const anglePerSection = 360 / totalSections;
     const midAngle = index * anglePerSection + anglePerSection / 2;
     const textRadius = 130;
     const angleRad = (midAngle - 90) * Math.PI / 180;
@@ -328,8 +464,8 @@ export default function DonutSelector() {
     };
   };
 
-  const createBorderPath = (index: number) => {
-    const anglePerSection = 360 / SECTIONS.length;
+  const createBorderPath = (index: number, totalSections: number = SECTIONS.length) => {
+    const anglePerSection = 360 / totalSections;
     const startAngle = index * anglePerSection;
     const endAngle = startAngle + anglePerSection;
     const outerRadius = 180;
@@ -354,35 +490,62 @@ export default function DonutSelector() {
     openSelectedSection(index);
   };
 
-  const handleBack = () => {
-    if (activeGroupStack.length > 1) {
-      setActiveGroupStack((prev) => prev.slice(0, -1));
-      setHoveredChar(0);
-      return;
-    }
-
-    setShowRectangle(false);
-    setSelectedSection(null);
-    setHoveredSection(null);
-    setHoveredChar(null);
-    setActiveGroupStack([]);
-  };
-
-  const handleBackspace = () => {
-    setTypedText((prev) => prev.slice(0, -1));
-  };
-
-  const handleClear = () => {
-    setTypedText('');
-  };
-
   const activeGroupLetters = activeGroupStack[activeGroupStack.length - 1] ?? '';
-  const activeGroups = splitIntoGroups(activeGroupLetters, 4);
+  const activeGroups = splitIntoGroups(activeGroupLetters, 4).filter((group) => group.length > 0);
   const activeGradient = selectedSection !== null ? GRADIENTS[selectedSection] : GRADIENTS[0];
 
   return (
     <div className="min-h-screen w-full bg-linear-to-br from-slate-900 via-slate-800 to-slate-900 relative overflow-hidden">
       <TiltTelemetry />
+
+      <div className="absolute top-1/2 right-121 -translate-y-1/2 z-30">
+        <div
+          className="backdrop-blur-md border border-white/30 rounded-xl p-2 flex flex-col gap-2"
+          style={{
+            background: isMenuMode
+              ? 'linear-gradient(180deg, rgba(99, 102, 241, 0.35), rgba(30, 41, 59, 0.65))'
+              : 'linear-gradient(180deg, rgba(30, 41, 59, 0.45), rgba(51, 65, 85, 0.45))',
+            boxShadow: isMenuMode
+              ? '0 0 28px rgba(99, 102, 241, 0.45), 0 10px 24px rgba(0, 0, 0, 0.35)'
+              : '0 8px 20px rgba(0, 0, 0, 0.25)',
+            transition: 'background 0.25s ease, box-shadow 0.25s ease',
+          }}
+        >
+          {MENU_BUTTONS.map((label, index) => {
+            const isHovered = hoveredMenuButton === index;
+            const handleMenuButtonClick = () => {
+              if (index === 0) {
+                handleClear();
+              } else if (index === 1) {
+                handleBackspace();
+              } else if (index === 2) {
+                console.log(`Menu button ${label} clicked`);
+              }
+            };
+
+            return (
+              <button
+                key={label}
+                type="button"
+                onClick={handleMenuButtonClick}
+                className="w-14 h-14 rounded-lg border text-lg font-semibold text-white/90 transition-all duration-200"
+                style={{
+                  borderColor: isMenuMode && isHovered ? 'rgba(255,255,255,0.9)' : 'rgba(255,255,255,0.25)',
+                  background: isMenuMode && isHovered
+                    ? 'linear-gradient(135deg, rgba(255,255,255,0.32), rgba(255,255,255,0.12))'
+                    : 'linear-gradient(135deg, rgba(255,255,255,0.12), rgba(255,255,255,0.04))',
+                  boxShadow: isMenuMode && isHovered
+                    ? '0 0 18px rgba(255,255,255,0.45), 0 0 24px rgba(99,102,241,0.4)'
+                    : 'none',
+                  transform: isMenuMode && isHovered ? 'scale(1.05)' : 'scale(1)',
+                }}
+              >
+                {label}
+              </button>
+            );
+          })}
+        </div>
+      </div>
 
       <div className="absolute top-1/2 left-8 -translate-y-1/2 w-[50%] max-w-3xl z-20">
         <div
@@ -574,16 +737,17 @@ export default function DonutSelector() {
               </defs>
 
               {activeGroups.map((group, index) => {
-                const pos = getTextPosition(index);
+                const subgroupCount = activeGroups.length;
+                const pos = getTextPosition(index, subgroupCount);
                 const isHovered = hoveredChar === index;
                 const isAnchored = anchoredChar === index;
-                const borderPath = createBorderPath(index);
+                const borderPath = createBorderPath(index, subgroupCount);
                 const pathLength = 600;
 
                 return (
                   <g key={index} className="cursor-pointer">
                     <path
-                      d={createDonutPath(index)}
+                      d={createDonutPath(index, subgroupCount)}
                       fill={isHovered ? 'url(#subgroupHover)' : 'url(#subgroupBase)'}
                       stroke="none"
                       style={{ transition: 'fill 0.3s ease-out' }}

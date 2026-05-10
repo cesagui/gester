@@ -33,6 +33,7 @@ const MENU_BUTTONS = ['1', '2', '3'];
 
 // Suggestion menu (right side) — mirrors the left menu but for Claude word completions
 const SUGGEST_SLOT_COUNT = 3;
+const SUGGEST_ENTER_HOLD_MS = 1500; // hold negative roll this long to open the suggest menu
 const COMPLETIONS_ENDPOINT = 'http://localhost:3000/complete';
 const COMPLETIONS_DEBOUNCE_MS = 250;
 
@@ -404,7 +405,7 @@ export default function DonutSelector() {
           if (!suggestEnterTimerRef.current) {
             suggestEnterTimerRef.current = setTimeout(() => {
               enterSuggestMode();
-            }, MENU_ENTER_HOLD_MS);
+            }, SUGGEST_ENTER_HOLD_MS);
           }
         } else if (suggestEnterTimerRef.current) {
           clearTimeout(suggestEnterTimerRef.current);
@@ -699,6 +700,15 @@ export default function DonutSelector() {
 
   React.useEffect(() => {
     if (completionsDebounceRef.current) clearTimeout(completionsDebounceRef.current);
+
+    // Only fetch when we're mid-word (last char is non-whitespace).
+    // Empty buffer or trailing whitespace → no suggestions (would be next-word, not completions).
+    if (!/\S$/.test(typedText)) {
+      completionsAbortRef.current?.abort();
+      setSuggestions([]);
+      return;
+    }
+
     completionsDebounceRef.current = setTimeout(() => {
       completionsAbortRef.current?.abort();
       const ac = new AbortController();

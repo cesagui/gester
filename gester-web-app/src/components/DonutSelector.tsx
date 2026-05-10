@@ -6,12 +6,43 @@ import { tiltStore } from '../lib/tiltStore';
 const SELECT_GESTURE_MAGNITUDE_THRESHOLD = 750;
 const ANCHOR_DELAY_MS = 500;
 
+const SECTIONS = [
+  { letters: 'ABCDEFG', gradient: 'url(#gradient0)' },
+  { letters: 'HIJKLMN', gradient: 'url(#gradient1)' },
+  { letters: 'OPQRSTU', gradient: 'url(#gradient2)' },
+  { letters: 'VWXYZ.!', gradient: 'url(#gradient3)' }
+];
+
+const GRADIENTS = [
+  { start: 'rgba(156, 163, 175, 0.4)', end: 'rgba(156, 163, 175, 0.2)', hoverStart: 'rgba(139, 92, 246, 0.85)', hoverEnd: 'rgba(99, 102, 241, 0.65)' },
+  { start: 'rgba(148, 156, 168, 0.4)', end: 'rgba(148, 156, 168, 0.2)', hoverStart: 'rgba(99, 102, 241, 0.85)', hoverEnd: 'rgba(59, 130, 246, 0.65)' },
+  { start: 'rgba(140, 149, 161, 0.4)', end: 'rgba(140, 149, 161, 0.2)', hoverStart: 'rgba(59, 130, 246, 0.85)', hoverEnd: 'rgba(14, 165, 233, 0.65)' },
+  { start: 'rgba(132, 142, 154, 0.4)', end: 'rgba(132, 142, 154, 0.2)', hoverStart: 'rgba(14, 165, 233, 0.85)', hoverEnd: 'rgba(6, 182, 212, 0.65)' }
+];
+
+const splitIntoGroups = (letters: string, groupCount: number) => {
+  if (!letters) return Array.from({ length: groupCount }, () => '');
+
+  const baseSize = Math.floor(letters.length / groupCount);
+  let remainder = letters.length % groupCount;
+  let start = 0;
+
+  return Array.from({ length: groupCount }, () => {
+    const size = baseSize + (remainder > 0 ? 1 : 0);
+    remainder -= remainder > 0 ? 1 : 0;
+    const group = letters.slice(start, start + size);
+    start += size;
+    return group;
+  });
+};
+
 export default function DonutSelector() {
   const [hoveredSection, setHoveredSection] = React.useState<number | null>(null);
   const [selectedSection, setSelectedSection] = React.useState<number | null>(null);
   const [showRectangle, setShowRectangle] = React.useState(false);
   const [hoveredChar, setHoveredChar] = React.useState<number | null>(null);
   const [typedText, setTypedText] = React.useState('');
+  const [activeGroupStack, setActiveGroupStack] = React.useState<string[]>([]);
 
   const showRectangleRef = React.useRef(showRectangle);
   React.useEffect(() => {
@@ -23,9 +54,15 @@ export default function DonutSelector() {
     selectedSectionRef.current = selectedSection;
   }, [selectedSection]);
 
+  const activeGroupRef = React.useRef('');
+  React.useEffect(() => {
+    activeGroupRef.current = activeGroupStack[activeGroupStack.length - 1] ?? '';
+  }, [activeGroupStack]);
+
   const openSelectedSection = (index: number) => {
     setHoveredSection(index);
     setSelectedSection(index);
+    setActiveGroupStack([SECTIONS[index].letters]);
     setShowRectangle(true);
     setHoveredChar(0); // Reset to first character when opening rectangle
   };
@@ -47,45 +84,52 @@ export default function DonutSelector() {
         magnitudeTriggeredRef.current = false;
       }
 
-      // Handle rectangle stage: map roll values to character selection
+      // Handle rectangle stage: map pitch values to subgroup selection
       if (showRectangleRef.current) {
-        if (selectedSectionRef.current !== null) {
-          const letters = sections[selectedSectionRef.current].letters;
-          const numChars = letters.length;
+        const activeLetters = activeGroupRef.current;
+        if (activeLetters) {
+          const groups = splitIntoGroups(activeLetters, 4);
+          const availableGroups = groups.filter((group) => group.length > 0);
+          const groupCount = availableGroups.length;
 
-          // Map pitch (-90 to 90) to character indices (0 to numChars - 1)
-          const PITCH_MAX = 90;
-          const pitchForChar = reading.pitch;
-            const clampedPitch = Math.max(-PITCH_MAX, Math.min(PITCH_MAX, pitchForChar));
-            const ratio = (clampedPitch + PITCH_MAX) / (2 * PITCH_MAX); // Normalize to 0..1
-            // Use floor mapping for smoother stepping across characters
-            let charIdx = Math.floor(ratio * numChars);
-            if (charIdx >= numChars) charIdx = numChars - 1;
-            const clampedIdx = Math.min(Math.max(charIdx, 0), numChars - 1);
+          const pitchForGroup = reading.pitch;
+          if (typeof pitchForGroup === 'number' && groupCount > 0) {
+            const PITCH_MAX = 90;
+            const clampedPitch = Math.max(-PITCH_MAX, Math.min(PITCH_MAX, pitchForGroup));
+            const ratio = (clampedPitch + PITCH_MAX) / (2 * PITCH_MAX);
+            let groupIdx = Math.floor(ratio * groupCount);
+            if (groupIdx >= groupCount) groupIdx = groupCount - 1;
+            const clampedIdx = Math.min(Math.max(groupIdx, 0), groupCount - 1);
             setHoveredChar(clampedIdx);
 
-          // (pitch-based confirmation removed) selection now confirmed only by magnitude spike
-
-            // Also confirm selection on a rising-edge magnitude spike (latch until it goes low)
+            // Confirm selection on a rising-edge magnitude spike (latch until it goes low)
             if (isHighMagnitude && !wasHighMagnitude && !magnitudeTriggeredRef.current) {
               magnitudeTriggeredRef.current = true;
-              const selectedChar = letters[clampedIdx];
-              setTypedText((prev) => prev + selectedChar);
+              const selectedGroup = availableGroups[clampedIdx];
 
-              // Return to the wheel UI immediately after selection
-              setShowRectangle(false);
-              setSelectedSection(null);
-              setHoveredSection(null);
-              setHoveredChar(null);
+              if (selectedGroup.length > 1) {
+                setActiveGroupStack((prev) => [...prev, selectedGroup]);
+                setHoveredChar(0);
+              } else {
+                setTypedText((prev) => prev + selectedGroup);
 
-              // Clear any anchored state/timers so wheel behaves normally
-              anchoredSectionRef.current = null;
-              sectionStableTimeRef.current = null;
-              if (anchorTimerRef.current) {
-                clearTimeout(anchorTimerRef.current);
-                anchorTimerRef.current = null;
+                // Return to the wheel UI immediately after selecting a single letter
+                setShowRectangle(false);
+                setSelectedSection(null);
+                setHoveredSection(null);
+                setHoveredChar(null);
+                setActiveGroupStack([]);
+
+                // Clear any anchored state/timers so wheel behaves normally
+                anchoredSectionRef.current = null;
+                sectionStableTimeRef.current = null;
+                if (anchorTimerRef.current) {
+                  clearTimeout(anchorTimerRef.current);
+                  anchorTimerRef.current = null;
+                }
               }
             }
+          }
         }
         return;
       }
@@ -106,7 +150,7 @@ export default function DonutSelector() {
       // If pitch is outside this range, don't select any section.
       let next: number | null = null;
       const pitch = reading.pitch;
-      const bins = sections.length;
+      const bins = SECTIONS.length;
 
       if (typeof pitch === 'number') {
         // Wrap pitch into the 0..90 range so values outside loop around.
@@ -155,30 +199,8 @@ export default function DonutSelector() {
     };
   }, []);
 
-  const sections = [
-    { letters: 'ETA', gradient: 'url(#gradient0)' },
-    { letters: 'OIN', gradient: 'url(#gradient1)' },
-    { letters: 'SHR', gradient: 'url(#gradient2)' },
-    { letters: 'DLCU', gradient: 'url(#gradient3)' },
-    { letters: ".?'", gradient: 'url(#gradient4)' },
-    { letters: 'FWG', gradient: 'url(#gradient5)' },
-    { letters: 'UPBV', gradient: 'url(#gradient6)' },
-    { letters: 'KJXQZ', gradient: 'url(#gradient7)' }
-  ];
-
-  const gradients = [
-    { start: 'rgba(156, 163, 175, 0.4)', end: 'rgba(156, 163, 175, 0.2)', hoverStart: 'rgba(139, 92, 246, 0.85)', hoverEnd: 'rgba(99, 102, 241, 0.65)' },
-    { start: 'rgba(148, 156, 168, 0.4)', end: 'rgba(148, 156, 168, 0.2)', hoverStart: 'rgba(99, 102, 241, 0.85)', hoverEnd: 'rgba(59, 130, 246, 0.65)' },
-    { start: 'rgba(140, 149, 161, 0.4)', end: 'rgba(140, 149, 161, 0.2)', hoverStart: 'rgba(59, 130, 246, 0.85)', hoverEnd: 'rgba(14, 165, 233, 0.65)' },
-    { start: 'rgba(132, 142, 154, 0.4)', end: 'rgba(132, 142, 154, 0.2)', hoverStart: 'rgba(14, 165, 233, 0.85)', hoverEnd: 'rgba(6, 182, 212, 0.65)' },
-    { start: 'rgba(124, 135, 147, 0.4)', end: 'rgba(124, 135, 147, 0.2)', hoverStart: 'rgba(6, 182, 212, 0.85)', hoverEnd: 'rgba(20, 184, 166, 0.65)' },
-    { start: 'rgba(116, 128, 140, 0.4)', end: 'rgba(116, 128, 140, 0.2)', hoverStart: 'rgba(20, 184, 166, 0.85)', hoverEnd: 'rgba(16, 185, 129, 0.65)' },
-    { start: 'rgba(108, 121, 133, 0.4)', end: 'rgba(108, 121, 133, 0.2)', hoverStart: 'rgba(16, 185, 129, 0.85)', hoverEnd: 'rgba(34, 197, 94, 0.65)' },
-    { start: 'rgba(100, 114, 126, 0.4)', end: 'rgba(100, 114, 126, 0.2)', hoverStart: 'rgba(34, 197, 94, 0.85)', hoverEnd: 'rgba(132, 204, 22, 0.65)' }
-  ];
-
   const createDonutPath = (index: number) => {
-    const anglePerSection = 360 / 8;
+    const anglePerSection = 360 / SECTIONS.length;
     const startAngle = index * anglePerSection;
     const endAngle = startAngle + anglePerSection;
     const outerRadius = 180;
@@ -200,7 +222,7 @@ export default function DonutSelector() {
   };
 
   const getTextPosition = (index: number) => {
-    const anglePerSection = 360 / 8;
+    const anglePerSection = 360 / SECTIONS.length;
     const midAngle = index * anglePerSection + anglePerSection / 2;
     const textRadius = 130;
     const angleRad = (midAngle - 90) * Math.PI / 180;
@@ -212,7 +234,7 @@ export default function DonutSelector() {
   };
 
   const createBorderPath = (index: number) => {
-    const anglePerSection = 360 / 8;
+    const anglePerSection = 360 / SECTIONS.length;
     const startAngle = index * anglePerSection;
     const endAngle = startAngle + anglePerSection;
     const outerRadius = 180;
@@ -238,9 +260,17 @@ export default function DonutSelector() {
   };
 
   const handleBack = () => {
+    if (activeGroupStack.length > 1) {
+      setActiveGroupStack((prev) => prev.slice(0, -1));
+      setHoveredChar(0);
+      return;
+    }
+
     setShowRectangle(false);
     setSelectedSection(null);
     setHoveredSection(null);
+    setHoveredChar(null);
+    setActiveGroupStack([]);
   };
 
   const handleBackspace = () => {
@@ -250,6 +280,10 @@ export default function DonutSelector() {
   const handleClear = () => {
     setTypedText('');
   };
+
+  const activeGroupLetters = activeGroupStack[activeGroupStack.length - 1] ?? '';
+  const activeGroups = splitIntoGroups(activeGroupLetters, 4);
+  const activeGradient = selectedSection !== null ? GRADIENTS[selectedSection] : GRADIENTS[0];
 
   return (
     <div className="min-h-screen w-full bg-linear-to-br from-slate-900 via-slate-800 to-slate-900 relative overflow-hidden">
@@ -283,10 +317,10 @@ export default function DonutSelector() {
               </button>
             </div>
           </div>
-          <p className="text-2xl text-white font-medium font-mono break-words min-h-[2.5rem]">
+          <p className="text-2xl text-white font-medium font-mono wrap-break-word min-h-10">
             {typedText || <span className="text-white/30">_</span>}
             <span
-              className="inline-block w-[2px] h-6 ml-0.5 animate-pulse align-middle"
+              className="inline-block w-0.5 h-6 ml-0.5 animate-pulse align-middle"
               style={{
                 background: 'linear-gradient(to bottom, rgba(139, 92, 246, 0.9), rgba(99, 102, 241, 0.9))',
                 boxShadow: '0 0 10px rgba(139, 92, 246, 0.6)',
@@ -314,7 +348,7 @@ export default function DonutSelector() {
         style={{ opacity: showRectangle ? 0 : 1, pointerEvents: showRectangle ? 'none' : 'auto' }}
       >
         <defs>
-          {gradients.map((grad, index) => (
+          {GRADIENTS.map((grad, index) => (
             <React.Fragment key={index}>
               <linearGradient id={`gradient${index}`} x1="0%" y1="0%" x2="100%" y2="100%">
                 <stop offset="0%" style={{ stopColor: grad.start, stopOpacity: 1 }} />
@@ -342,7 +376,7 @@ export default function DonutSelector() {
           </filter>
         </defs>
 
-        {sections.map((section, index) => {
+        {SECTIONS.map((section, index) => {
           const pos = getTextPosition(index);
           const isHovered = hoveredSection === index;
           const borderPath = createBorderPath(index);
@@ -419,49 +453,81 @@ export default function DonutSelector() {
 
       {showRectangle && selectedSection !== null && (
         <div className="absolute top-1/2 right-8 -translate-y-1/2 z-10 flex flex-col items-center justify-center gap-6" style={{ width: '460px', height: '460px' }}>
-          <div
-            className="flex backdrop-blur-md border border-white/30 rounded-lg overflow-hidden relative"
-            style={{
-              background: `linear-gradient(135deg, ${gradients[selectedSection].hoverStart}, ${gradients[selectedSection].hoverEnd})`,
-              boxShadow: '0 8px 32px 0 rgba(0, 0, 0, 0.4), 0 0 40px rgba(139, 92, 246, 0.3)',
-              animation: 'slideIn 0.4s ease-out both'
-            }}
-          >
-            {sections[selectedSection].letters.split('').map((char, idx) => {
-              const isCharHovered = hoveredChar === idx;
+          <div className="relative flex items-center justify-center" style={{ width: '420px', height: '420px', animation: 'slideIn 0.4s ease-out both' }}>
+            <svg width="420" height="420" viewBox="0 0 400 400" className="drop-shadow-2xl">
+              <defs>
+                <linearGradient id="subgroupBase" x1="0%" y1="0%" x2="100%" y2="100%">
+                  <stop offset="0%" style={{ stopColor: activeGradient.start, stopOpacity: 1 }} />
+                  <stop offset="100%" style={{ stopColor: activeGradient.end, stopOpacity: 1 }} />
+                </linearGradient>
+                <linearGradient id="subgroupHover" x1="0%" y1="0%" x2="100%" y2="100%">
+                  <stop offset="0%" style={{ stopColor: activeGradient.hoverStart, stopOpacity: 1 }} />
+                  <stop offset="100%" style={{ stopColor: activeGradient.hoverEnd, stopOpacity: 1 }} />
+                </linearGradient>
+                <filter id="subgroupGlow">
+                  <feGaussianBlur stdDeviation="2.5" result="coloredBlur" />
+                  <feMerge>
+                    <feMergeNode in="coloredBlur" />
+                    <feMergeNode in="SourceGraphic" />
+                  </feMerge>
+                </filter>
+              </defs>
 
-              return (
-                <div
-                  key={idx}
-                  className="w-20 h-24 flex items-center justify-center relative pointer-events-none transition-all duration-200"
-                  style={{
-                    borderRight: idx < sections[selectedSection].letters.length - 1 ? '1px solid rgba(255, 255, 255, 0.25)' : 'none',
-                    background: isCharHovered ? 'rgba(255, 255, 255, 0.2)' : 'transparent',
-                    transform: isCharHovered ? 'scale(1.05)' : 'scale(1)'
-                  }}
-                >
-                  <div
-                    className="absolute inset-0 pointer-events-none border-4 transition-all duration-200 rounded-md"
-                    style={{
-                      borderColor: isCharHovered ? 'rgba(255, 255, 255, 0.9)' : 'transparent',
-                      boxShadow: isCharHovered ? '0 0 20px rgba(255, 255, 255, 0.5)' : 'none'
-                    }}
-                  />
-                  <span
-                    className="text-3xl font-medium text-white select-none relative z-10 transition-all duration-200"
-                    style={{
-                      fontFamily: 'Atkinson Hyperlegible, sans-serif',
-                      textShadow: isCharHovered
-                        ? '0 0 20px rgba(255, 255, 255, 0.8), 0 2px 8px rgba(0, 0, 0, 0.5)'
-                        : '0 2px 8px rgba(0, 0, 0, 0.5)',
-                      transform: isCharHovered ? 'scale(1.1)' : 'scale(1)'
-                    }}
-                  >
-                    {char}
-                  </span>
-                </div>
-              );
-            })}
+              {activeGroups.map((group, index) => {
+                const pos = getTextPosition(index);
+                const isHovered = hoveredChar === index;
+                const borderPath = createBorderPath(index);
+                const pathLength = 600;
+
+                return (
+                  <g key={index} className="cursor-pointer">
+                    <path
+                      d={createDonutPath(index)}
+                      fill={isHovered ? 'url(#subgroupHover)' : 'url(#subgroupBase)'}
+                      stroke="none"
+                      style={{ transition: 'fill 0.3s ease-out' }}
+                    />
+                    <path
+                      d={borderPath}
+                      fill="none"
+                      stroke={isHovered ? 'rgba(255, 255, 255, 0.85)' : 'rgba(255, 255, 255, 0.45)'}
+                      strokeWidth={isHovered ? '4' : '0.5'}
+                      strokeDasharray={pathLength}
+                      strokeDashoffset={isHovered ? 0 : pathLength}
+                      className="pointer-events-none"
+                      style={{
+                        transition: isHovered
+                          ? 'stroke-dashoffset 0.4s ease-out, stroke-width 0.2s ease-out, stroke 0.3s ease-out'
+                          : 'stroke-dashoffset 0.4s ease-in, stroke-width 0.2s ease-in, stroke 0.3s ease-in',
+                        filter: isHovered ? 'drop-shadow(0 0 8px rgba(255, 255, 255, 0.6))' : 'none'
+                      }}
+                    />
+                    {group.length > 0 && (
+                      <text
+                        x={pos.x}
+                        y={pos.y}
+                        textAnchor="middle"
+                        dominantBaseline="middle"
+                        className="text-xl font-medium fill-white select-none"
+                        filter="url(#subgroupGlow)"
+                        style={{
+                          letterSpacing: '0.05em',
+                          fontFamily: 'Atkinson Hyperlegible, sans-serif',
+                          transition: 'filter 0.3s ease-out, transform 0.3s ease-out',
+                          transform: isHovered ? 'scale(1.1)' : 'scale(1)',
+                          transformOrigin: 'center'
+                        }}
+                      >
+                        {group}
+                      </text>
+                    )}
+                  </g>
+                );
+              })}
+
+              <circle cx="200" cy="200" r="180" fill="none" stroke="rgba(255, 255, 255, 0.2)" strokeWidth="2" />
+              <circle cx="200" cy="200" r="80" fill="none" stroke="rgba(255, 255, 255, 0.2)" strokeWidth="2" />
+            </svg>
           </div>
           <button
             onClick={handleBack}

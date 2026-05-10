@@ -2,6 +2,7 @@ import React from 'react';
 import { FaBackspace } from 'react-icons/fa';
 import { IoIosCloseCircle } from 'react-icons/io';
 import { TbNumber123 } from 'react-icons/tb';
+import { MdSpaceBar } from 'react-icons/md';
 import TiltTelemetry from './TiltTelemetry';
 import MotionGraph from './MotionGraph';
 import { tiltStore } from '../lib/tiltStore';
@@ -9,7 +10,7 @@ import { tiltStore } from '../lib/tiltStore';
 // ── Sensitivity knobs ────────────────────────────────────────────────────
 // Wheel (outer sections) — pitch → section index
 const WHEEL_PITCH_RANGE_DEG = 90; // total pitch span across all wheel sections
-const WHEEL_DEADZONE_DEG = 5;     // |pitch| below this → nothing selected (rest pose)
+const WHEEL_DEADZONE_DEG = 8;     // |pitch| below this → nothing selected (rest pose); flick at rest types a space
 const WHEEL_HYSTERESIS_DEG = 3;   // pitch must overshoot a boundary by this much to switch sections
 
 // Letter rectangle — pitch → subgroup index inside the active group
@@ -34,11 +35,16 @@ const MENU_BUTTONS = ['1', '2', '3'];
 const ANCHOR_DELAY_MS = 500;
 // ────────────────────────────────────────────────────
 
+// Frequency-weighted layout: top 8 English letters live in two 4-letter
+// sections (2 flicks each); the remaining 18 split into two 9-letter
+// sections (3 flicks each). Keeps the wheel visually balanced (4+4+9+9).
+// Within each section, letters are ordered by frequency too, so the
+// most-common letter in that section lands at the lowest pitch index.
 const SECTIONS = [
-  { letters: 'ABCDEFG', gradient: 'url(#gradient0)' },
-  { letters: 'HIJKLM', gradient: 'url(#gradient1)' },
-  { letters: 'NOPQRST', gradient: 'url(#gradient2)' },
-  { letters: 'UVWXYZ', gradient: 'url(#gradient3)' }
+  { letters: 'ETAO', gradient: 'url(#gradient0)' },
+  { letters: 'INSH', gradient: 'url(#gradient1)' },
+  { letters: 'DLCMFGBKJ', gradient: 'url(#gradient2)' },
+  { letters: 'RUWYPVXQZ', gradient: 'url(#gradient3)' }
 ];
 
 const GRADIENTS = [
@@ -47,6 +53,28 @@ const GRADIENTS = [
   { start: 'rgba(140, 149, 161, 0.4)', end: 'rgba(140, 149, 161, 0.2)', hoverStart: 'rgba(59, 130, 246, 0.85)', hoverEnd: 'rgba(14, 165, 233, 0.65)' },
   { start: 'rgba(132, 142, 154, 0.4)', end: 'rgba(132, 142, 154, 0.2)', hoverStart: 'rgba(14, 165, 233, 0.85)', hoverEnd: 'rgba(6, 182, 212, 0.65)' }
 ];
+
+// Equal angular wedges (90° each), but sections with long letter strings
+// get a thicker donut ring (girth) so the text has more visual room
+// without crowding the wedge edge.
+const SECTION_LAYOUT = (() => {
+  const angleSpan = 360 / SECTIONS.length;
+  const pitchWidth = WHEEL_PITCH_RANGE_DEG / SECTIONS.length;
+  return SECTIONS.map((s, i) => {
+    const isLong = s.letters.length > 5;
+    return {
+      angleStart: i * angleSpan,
+      angleEnd: (i + 1) * angleSpan,
+      pitchStart: i * pitchWidth,
+      pitchEnd: (i + 1) * pitchWidth,
+      pitchCenter: (i + 0.5) * pitchWidth,
+      pitchWidth,
+      outerRadius: isLong ? 195 : 165,
+      // All sections share the same inner edge so the donut hole stays a clean circle.
+      innerRadius: 65,
+    };
+  });
+})();
 
 const splitIntoGroups = (letters: string, groupCount: number) => {
   if (!letters) return Array.from({ length: groupCount }, () => '');
@@ -76,6 +104,7 @@ export default function DonutSelector() {
   const [isMenuMode, setIsMenuMode] = React.useState(false);
   const [hoveredMenuButton, setHoveredMenuButton] = React.useState<number | null>(null);
   const [currentRoll, setCurrentRoll] = React.useState(0);
+  const [isSpaceAnchored, setIsSpaceAnchored] = React.useState(false);
 
   const showRectangleRef = React.useRef(showRectangle);
   React.useEffect(() => {
@@ -159,6 +188,7 @@ export default function DonutSelector() {
     // Clear anchors/timers so returning to the wheel starts cleanly
     anchoredSectionRef.current = null;
     setAnchoredSection(null);
+    setIsSpaceAnchored(false);
     sectionStableTimeRef.current = null;
     if (anchorTimerRef.current) {
       clearTimeout(anchorTimerRef.current);
@@ -398,38 +428,50 @@ export default function DonutSelector() {
         const currentSection = lastTiltSectionRef.current;
         if (currentSection !== null) {
           openSelectedSection(currentSection);
+        } else {
+          // Rest-pose flick (in deadzone, no section selected) types a space
+          setTypedText((prev) => prev + ' ');
+          setIsSpaceAnchored(false);
+          if (anchorTimerRef.current) clearTimeout(anchorTimerRef.current);
+          anchorTimerRef.current = setTimeout(() => {
+            if (lastTiltSectionRef.current === null) setIsSpaceAnchored(true);
+          }, ANCHOR_DELAY_MS);
         }
         return;
       }
 
-      // Map pitch evenly across the wheel's sections, with a small deadzone at rest.
+      // Map pitch across the wheel's sections (variable widths from SECTION_LAYOUT),
+      // with a small deadzone at rest.
       let next: number | null = null;
       const pitch = reading.pitch;
-      const bins = SECTIONS.length;
 
       if (typeof pitch === 'number' && Math.abs(pitch) >= WHEEL_DEADZONE_DEG) {
         // Wrap pitch into [0, WHEEL_PITCH_RANGE_DEG) so values outside loop around.
         let normalized = pitch % WHEEL_PITCH_RANGE_DEG;
         if (normalized < 0) normalized += WHEEL_PITCH_RANGE_DEG;
 
-        const ratio = normalized / WHEEL_PITCH_RANGE_DEG;
-        let rawNext = Math.floor(ratio * bins);
-        if (rawNext >= bins) rawNext = bins - 1;
+        // Find which section's pitch slice contains `normalized`.
+        let rawNext = SECTION_LAYOUT.length - 1;
+        for (let i = 0; i < SECTION_LAYOUT.length; i++) {
+          if (normalized < SECTION_LAYOUT[i].pitchEnd) {
+            rawNext = i;
+            break;
+          }
+        }
 
         const last = lastTiltSectionRef.current;
         if (last === null || rawNext === last) {
           next = rawNext;
         } else {
-          // Hysteresis: stick to the current section until pitch is past the
+          // Hysteresis: stick to the current section until pitch is past its
           // boundary by WHEEL_HYSTERESIS_DEG. Distance is measured from the
           // center of the last section, with wrap-around.
-          const sectionWidth = WHEEL_PITCH_RANGE_DEG / bins;
-          const lastCenter = (last + 0.5) * sectionWidth;
-          let delta = normalized - lastCenter;
+          const lastRange = SECTION_LAYOUT[last];
+          let delta = normalized - lastRange.pitchCenter;
           if (delta > WHEEL_PITCH_RANGE_DEG / 2) delta -= WHEEL_PITCH_RANGE_DEG;
           if (delta < -WHEEL_PITCH_RANGE_DEG / 2) delta += WHEEL_PITCH_RANGE_DEG;
 
-          if (Math.abs(delta) >= sectionWidth / 2 + WHEEL_HYSTERESIS_DEG) {
+          if (Math.abs(delta) >= lastRange.pitchWidth / 2 + WHEEL_HYSTERESIS_DEG) {
             next = rawNext;
           } else {
             next = last;
@@ -456,15 +498,18 @@ export default function DonutSelector() {
       if (next !== lastTiltSectionRef.current) {
         lastTiltSectionRef.current = next;
         setHoveredSection(next);
-        
+        setIsSpaceAnchored(false);
+
         // Reset stable timer on section change
         sectionStableTimeRef.current = Date.now();
         if (anchorTimerRef.current) clearTimeout(anchorTimerRef.current);
-        
-        // Set timer to anchor this section after ANCHOR_DELAY_MS
+
+        // Set timer to anchor this section after ANCHOR_DELAY_MS;
+        // a null `next` means we're at rest (deadzone) → space-anchored.
         anchorTimerRef.current = setTimeout(() => {
           anchoredSectionRef.current = next;
           setAnchoredSection(next);
+          if (next === null) setIsSpaceAnchored(true);
         }, ANCHOR_DELAY_MS);
       }
     });
@@ -480,12 +525,8 @@ export default function DonutSelector() {
     };
   }, []);
 
-  const createDonutPath = (index: number, totalSections: number = SECTIONS.length) => {
-    const anglePerSection = 360 / totalSections;
-    const startAngle = index * anglePerSection;
-    const endAngle = startAngle + anglePerSection;
-    const outerRadius = 180;
-    const innerRadius = 80;
+  const createDonutPath = (startAngle: number, endAngle: number, outerRadius = 180, innerRadius = 80) => {
+    const largeArc = endAngle - startAngle > 180 ? 1 : 0;
 
     const startAngleRad = (startAngle - 90) * Math.PI / 180;
     const endAngleRad = (endAngle - 90) * Math.PI / 180;
@@ -499,13 +540,11 @@ export default function DonutSelector() {
     const x4 = 200 + innerRadius * Math.cos(startAngleRad);
     const y4 = 200 + innerRadius * Math.sin(startAngleRad);
 
-    return `M ${x1} ${y1} A ${outerRadius} ${outerRadius} 0 0 1 ${x2} ${y2} L ${x3} ${y3} A ${innerRadius} ${innerRadius} 0 0 0 ${x4} ${y4} Z`;
+    return `M ${x1} ${y1} A ${outerRadius} ${outerRadius} 0 ${largeArc} 1 ${x2} ${y2} L ${x3} ${y3} A ${innerRadius} ${innerRadius} 0 ${largeArc} 0 ${x4} ${y4} Z`;
   };
 
-  const getTextPosition = (index: number, totalSections: number = SECTIONS.length) => {
-    const anglePerSection = 360 / totalSections;
-    const midAngle = index * anglePerSection + anglePerSection / 2;
-    const textRadius = 130;
+  const getTextPosition = (startAngle: number, endAngle: number, textRadius = 130) => {
+    const midAngle = (startAngle + endAngle) / 2;
     const angleRad = (midAngle - 90) * Math.PI / 180;
 
     return {
@@ -514,12 +553,8 @@ export default function DonutSelector() {
     };
   };
 
-  const createBorderPath = (index: number, totalSections: number = SECTIONS.length) => {
-    const anglePerSection = 360 / totalSections;
-    const startAngle = index * anglePerSection;
-    const endAngle = startAngle + anglePerSection;
-    const outerRadius = 180;
-    const innerRadius = 80;
+  const createBorderPath = (startAngle: number, endAngle: number, outerRadius = 180, innerRadius = 80) => {
+    const largeArc = endAngle - startAngle > 180 ? 1 : 0;
 
     const startAngleRad = (startAngle - 90) * Math.PI / 180;
     const endAngleRad = (endAngle - 90) * Math.PI / 180;
@@ -533,7 +568,18 @@ export default function DonutSelector() {
     const x4 = 200 + innerRadius * Math.cos(startAngleRad);
     const y4 = 200 + innerRadius * Math.sin(startAngleRad);
 
-    return `M ${x1} ${y1} A ${outerRadius} ${outerRadius} 0 0 1 ${x2} ${y2} L ${x3} ${y3} A ${innerRadius} ${innerRadius} 0 0 0 ${x4} ${y4} L ${x1} ${y1}`;
+    return `M ${x1} ${y1} A ${outerRadius} ${outerRadius} 0 ${largeArc} 1 ${x2} ${y2} L ${x3} ${y3} A ${innerRadius} ${innerRadius} 0 ${largeArc} 0 ${x4} ${y4} L ${x1} ${y1}`;
+  };
+
+  const createArcPath = (startAngle: number, endAngle: number, radius: number) => {
+    const largeArc = endAngle - startAngle > 180 ? 1 : 0;
+    const startAngleRad = (startAngle - 90) * Math.PI / 180;
+    const endAngleRad = (endAngle - 90) * Math.PI / 180;
+    const x1 = 200 + radius * Math.cos(startAngleRad);
+    const y1 = 200 + radius * Math.sin(startAngleRad);
+    const x2 = 200 + radius * Math.cos(endAngleRad);
+    const y2 = 200 + radius * Math.sin(endAngleRad);
+    return `M ${x1} ${y1} A ${radius} ${radius} 0 ${largeArc} 1 ${x2} ${y2}`;
   };
 
   const handleSectionClick = (index: number) => {
@@ -668,6 +714,27 @@ export default function DonutSelector() {
       >
         <MotionGraph embedded />
       </div>
+      {/* Space icon — flick at rest pose (deadzone) types a space; anchors after dwell */}
+      <div
+        className="absolute pointer-events-none flex items-center justify-center"
+        style={{
+          top: '50%',
+          left: '50%',
+          width: 96,
+          height: 96,
+          transform: `translate(-50%, -50%) scale(${isSpaceAnchored ? 1.1 : 1})`,
+          opacity: showRectangle ? 0 : 1,
+          color: isSpaceAnchored ? 'rgba(255,255,255,1)' : 'rgba(255,255,255,0.55)',
+          filter: isSpaceAnchored
+            ? 'drop-shadow(0 0 16px rgba(255, 255, 255, 1)) drop-shadow(0 0 28px rgba(139, 92, 246, 0.7))'
+            : 'drop-shadow(0 0 4px rgba(255, 255, 255, 0.25))',
+          borderRadius: '50%',
+          border: `2px solid rgba(255,255,255,${isSpaceAnchored ? 1 : 0.15})`,
+          transition: 'opacity 0.4s, color 0.4s, filter 0.4s, transform 0.4s, border-color 0.4s',
+        }}
+      >
+        <MdSpaceBar size={44} />
+      </div>
       <svg
         width="460"
         height="460"
@@ -713,10 +780,12 @@ export default function DonutSelector() {
         </defs>
 
         {SECTIONS.map((section, index) => {
-          const pos = getTextPosition(index);
+          const { angleStart, angleEnd, outerRadius, innerRadius } = SECTION_LAYOUT[index];
+          const textRadius = (outerRadius + innerRadius) / 2;
+          const pos = getTextPosition(angleStart, angleEnd, textRadius);
           const isHovered = hoveredSection === index;
           const isAnchored = anchoredSection === index;
-          const borderPath = createBorderPath(index);
+          const borderPath = createBorderPath(angleStart, angleEnd, outerRadius, innerRadius);
 
           return (
             <g
@@ -727,7 +796,7 @@ export default function DonutSelector() {
               className="cursor-pointer"
             >
               <path
-                d={createDonutPath(index)}
+                d={createDonutPath(angleStart, angleEnd, outerRadius, innerRadius)}
                 fill={isHovered ? `url(#gradientHover${index})` : section.gradient}
                 stroke="none"
                 style={{ transition: 'fill 0.3s ease-out' }}
@@ -770,9 +839,9 @@ export default function DonutSelector() {
           );
         })}
 
-        {/* Left rim red glow — sidebar transition cue */}
+        {/* Left rim red glow — sidebar transition cue (sits on sections 2/3, outer=195) */}
         <path
-          d="M 73 73 A 180 180 0 0 0 73 327"
+          d="M 62.1 62.1 A 195 195 0 0 0 62.1 337.9"
           fill="none"
           stroke="#ef4444"
           strokeWidth={16}
@@ -782,9 +851,9 @@ export default function DonutSelector() {
           className="pointer-events-none"
           style={{ transition: 'opacity 0.12s ease-out' }}
         />
-        {/* Right rim blue glow — return-to-wheel cue */}
+        {/* Right rim blue glow — return-to-wheel cue (sits on sections 0/1, outer=165) */}
         <path
-          d="M 327 73 A 180 180 0 0 1 327 327"
+          d="M 316.7 83.3 A 165 165 0 0 1 316.7 316.7"
           fill="none"
           stroke="#3b82f6"
           strokeWidth={16}
@@ -795,22 +864,25 @@ export default function DonutSelector() {
           style={{ transition: 'opacity 0.12s ease-out' }}
         />
 
-        <circle
-          cx="200"
-          cy="200"
-          r="180"
-          fill="none"
-          stroke="rgba(255, 255, 255, 0.2)"
-          strokeWidth="2"
-        />
-        <circle
-          cx="200"
-          cy="200"
-          r="80"
-          fill="none"
-          stroke="rgba(255, 255, 255, 0.2)"
-          strokeWidth="2"
-        />
+        {/* Per-section outer/inner outline arcs (replace the old single radius circles) */}
+        {SECTION_LAYOUT.map((layout, index) => (
+          <React.Fragment key={`outline-${index}`}>
+            <path
+              d={createArcPath(layout.angleStart, layout.angleEnd, layout.outerRadius)}
+              fill="none"
+              stroke="rgba(255, 255, 255, 0.2)"
+              strokeWidth="2"
+              className="pointer-events-none"
+            />
+            <path
+              d={createArcPath(layout.angleStart, layout.angleEnd, layout.innerRadius)}
+              fill="none"
+              stroke="rgba(255, 255, 255, 0.2)"
+              strokeWidth="2"
+              className="pointer-events-none"
+            />
+          </React.Fragment>
+        ))}
       </svg>
       </div>
 
@@ -838,15 +910,18 @@ export default function DonutSelector() {
 
               {activeGroups.map((group, index) => {
                 const subgroupCount = activeGroups.length;
-                const pos = getTextPosition(index, subgroupCount);
+                const subgroupSpan = 360 / subgroupCount;
+                const subStart = index * subgroupSpan;
+                const subEnd = subStart + subgroupSpan;
+                const pos = getTextPosition(subStart, subEnd);
                 const isHovered = hoveredChar === index;
                 const isAnchored = anchoredChar === index;
-                const borderPath = createBorderPath(index, subgroupCount);
+                const borderPath = createBorderPath(subStart, subEnd);
 
                 return (
                   <g key={index} className="cursor-pointer">
                     <path
-                      d={createDonutPath(index, subgroupCount)}
+                      d={createDonutPath(subStart, subEnd)}
                       fill={isHovered ? 'url(#subgroupHover)' : 'url(#subgroupBase)'}
                       stroke="none"
                       style={{ transition: 'fill 0.3s ease-out' }}

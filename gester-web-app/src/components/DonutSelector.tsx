@@ -1,6 +1,7 @@
 import React from 'react';
 import { FaBackspace } from 'react-icons/fa';
 import { IoIosCloseCircle } from 'react-icons/io';
+import { TbNumber123 } from 'react-icons/tb';
 import TiltTelemetry from './TiltTelemetry';
 import MotionGraph from './MotionGraph';
 import { tiltStore } from '../lib/tiltStore';
@@ -538,6 +539,7 @@ export default function DonutSelector() {
             const getIcon = () => {
               if (index === 0) return <IoIosCloseCircle size={28} />;
               if (index === 1) return <FaBackspace size={24} />;
+              if (index === 2) return <TbNumber123 size={28} />;
               return null;
             };
 
@@ -546,7 +548,7 @@ export default function DonutSelector() {
                 key={label}
                 type="button"
                 onClick={handleMenuButtonClick}
-                className="w-14 h-14 rounded-lg border flex items-center justify-center text-white/90 transition-all duration-200"
+                className="w-14 h-14 rounded-lg border flex items-center justify-center text-white/90 transition-all duration-150"
                 style={{
                   borderColor: isMenuMode && isHovered ? 'rgba(255,255,255,0.9)' : 'rgba(255,255,255,0.25)',
                   background: isMenuMode && isHovered
@@ -677,7 +679,6 @@ export default function DonutSelector() {
           const isHovered = hoveredSection === index;
           const isAnchored = anchoredSection === index;
           const borderPath = createBorderPath(index);
-          const pathLength = 600;
 
           return (
             <g
@@ -698,8 +699,9 @@ export default function DonutSelector() {
                 fill="none"
                 stroke={isAnchored ? "rgba(255, 255, 255, 1)" : isHovered ? "rgba(255, 255, 255, 0.8)" : "rgba(255, 255, 255, 0.5)"}
                 strokeWidth={isAnchored ? "6" : isHovered ? "4" : "0.5"}
-                strokeDasharray={pathLength}
-                strokeDashoffset={isHovered ? 0 : pathLength}
+                pathLength={1}
+                strokeDasharray={1}
+                strokeDashoffset={isHovered ? 0 : 1}
                 className="pointer-events-none"
                 style={{
                   transition: isHovered
@@ -754,7 +756,7 @@ export default function DonutSelector() {
 
       {showRectangle && selectedSection !== null && (
         <div className="absolute top-1/2 right-8 -translate-y-1/2 z-10 flex flex-col items-center justify-center gap-6" style={{ width: '460px', height: '460px' }}>
-          <div className="relative flex items-center justify-center" style={{ width: '420px', height: '420px', animation: 'slideIn 0.4s ease-out both' }}>
+          <div className="relative flex items-center justify-center" style={{ width: '420px', height: '420px', animation: 'slideIn 0.2s ease-out both' }}>
             <svg width="420" height="420" viewBox="0 0 400 400" className="drop-shadow-2xl">
               <defs>
                 <linearGradient id="subgroupBase" x1="0%" y1="0%" x2="100%" y2="100%">
@@ -780,7 +782,6 @@ export default function DonutSelector() {
                 const isHovered = hoveredChar === index;
                 const isAnchored = anchoredChar === index;
                 const borderPath = createBorderPath(index, subgroupCount);
-                const pathLength = 600;
 
                 return (
                   <g key={index} className="cursor-pointer">
@@ -795,8 +796,9 @@ export default function DonutSelector() {
                       fill="none"
                       stroke={isAnchored ? 'rgba(255, 255, 255, 1)' : isHovered ? 'rgba(255, 255, 255, 0.85)' : 'rgba(255, 255, 255, 0.45)'}
                       strokeWidth={isAnchored ? '6' : isHovered ? '4' : '0.5'}
-                      strokeDasharray={pathLength}
-                      strokeDashoffset={isHovered ? 0 : pathLength}
+                      pathLength={1}
+                      strokeDasharray={1}
+                      strokeDashoffset={isHovered ? 0 : 1}
                       className="pointer-events-none"
                       style={{
                         transition: isHovered

@@ -26,7 +26,8 @@ const MENU_ENTER_ROLL_THRESHOLD = 50;
 const MENU_EXIT_ROLL_THRESHOLD = -50;
 const MENU_GLOW_START_DEG = 40;   // rim glow begins at this absolute roll, peaks at the threshold, hidden past it
 const MENU_ENTER_HOLD_MS = 2000;
-const MENU_EXIT_HOLD_MS = 2000; // hold duration to trigger "back" when in nested rectangle
+const MENU_EXIT_HOLD_MS = 1500; // hold duration to trigger "back" when in nested rectangle
+const MENU_EXIT_HYSTERESIS_DEG = 8; // small hysteresis to avoid jitter canceling the hold
 const MENU_BUTTONS = ['1', '2', '3'];
 
 // Section "anchor" (lock current section after holding this long)
@@ -114,6 +115,8 @@ export default function DonutSelector() {
   const rearmTimerRef = React.useRef<ReturnType<typeof setTimeout> | null>(null);
   const menuEnterTimerRef = React.useRef<ReturnType<typeof setTimeout> | null>(null);
   const backHoldTimerRef = React.useRef<ReturnType<typeof setTimeout> | null>(null);
+  const rollFilteredRef = React.useRef<number | null>(null);
+  const ROLL_FILTER_ALPHA = 0.22; // lower -> smoother, higher -> more responsive
   const lastCharIdxRef = React.useRef<number | null>(null);
   const anchoredCharRef = React.useRef<number | null>(null);
   const charAnchorTimerRef = React.useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -215,11 +218,17 @@ export default function DonutSelector() {
       const wasHighMagnitude = lastHighMagnitudeRef.current;
       lastHighMagnitudeRef.current = isHighMagnitude;
       const roll = reading.roll;
-      if (typeof roll === 'number') setCurrentRoll(roll);
+      let filteredRoll = roll;
+      if (typeof roll === 'number') {
+        if (rollFilteredRef.current === null) rollFilteredRef.current = roll;
+        else rollFilteredRef.current = rollFilteredRef.current * (1 - ROLL_FILTER_ALPHA) + roll * ROLL_FILTER_ALPHA;
+        filteredRoll = rollFilteredRef.current as number;
+        setCurrentRoll(filteredRoll);
+      }
 
       // Hold positive roll for 2s to enter menu mode (wheel stage only).
       if (!menuModeRef.current && !showRectangleRef.current) {
-        if (roll >= MENU_ENTER_ROLL_THRESHOLD) {
+          if (filteredRoll !== undefined && filteredRoll !== null && filteredRoll >= MENU_ENTER_ROLL_THRESHOLD) {
           if (!menuEnterTimerRef.current) {
             menuEnterTimerRef.current = setTimeout(() => {
               enterMenuMode();
@@ -234,10 +243,10 @@ export default function DonutSelector() {
         menuEnterTimerRef.current = null;
       }
 
-      // Back-hold while in nested rectangle: hold negative roll to go back one level.
+      // Back-hold while in rectangle: hold negative roll to go back one level or exit.
       if (!menuModeRef.current && showRectangleRef.current) {
-        if (activeGroupDepthRef.current > 1) {
-          if (roll <= MENU_EXIT_ROLL_THRESHOLD) {
+        if (activeGroupDepthRef.current >= 1) {
+          if (typeof filteredRoll === 'number' && filteredRoll <= MENU_EXIT_ROLL_THRESHOLD) {
             if (!backHoldTimerRef.current) {
               backHoldTimerRef.current = setTimeout(() => {
                 handleBack();
@@ -245,8 +254,12 @@ export default function DonutSelector() {
               }, MENU_EXIT_HOLD_MS);
             }
           } else if (backHoldTimerRef.current) {
-            clearTimeout(backHoldTimerRef.current);
-            backHoldTimerRef.current = null;
+            // Only clear the timer if roll has moved back above the threshold
+            // plus a small hysteresis to avoid cancelling due to jitter.
+            if (typeof filteredRoll !== 'number' || filteredRoll > MENU_EXIT_ROLL_THRESHOLD + MENU_EXIT_HYSTERESIS_DEG) {
+              clearTimeout(backHoldTimerRef.current);
+              backHoldTimerRef.current = null;
+            }
           }
         } else if (backHoldTimerRef.current) {
           clearTimeout(backHoldTimerRef.current);
@@ -724,8 +737,8 @@ export default function DonutSelector() {
                 fill="none"
                 stroke="rgba(255, 255, 255, 1)"
                 strokeWidth={isAnchored ? "6" : "0.5"}
-                strokeDasharray={pathLength}
-                strokeDashoffset={isAnchored ? 0 : pathLength}
+                strokeDasharray={0}
+                strokeDashoffset={isAnchored ? 0 : 0}
                 className="pointer-events-none"
                 style={{
                   transition: isAnchored
@@ -843,8 +856,8 @@ export default function DonutSelector() {
                       fill="none"
                       stroke="rgba(255, 255, 255, 1)"
                       strokeWidth={isAnchored ? '6' : '0.5'}
-                      strokeDasharray={pathLength}
-                      strokeDashoffset={isAnchored ? 0 : pathLength}
+                      strokeDasharray={0}
+                      strokeDashoffset={isAnchored ? 0 : 0}
                       className="pointer-events-none"
                       style={{
                         transition: isAnchored

@@ -144,6 +144,7 @@ export default function DonutSelector() {
   const rearmTimerRef = React.useRef<ReturnType<typeof setTimeout> | null>(null);
   const menuEnterTimerRef = React.useRef<ReturnType<typeof setTimeout> | null>(null);
   const backHoldTimerRef = React.useRef<ReturnType<typeof setTimeout> | null>(null);
+  const backCooldownUntilRef = React.useRef<number>(0);
   const rollFilteredRef = React.useRef<number | null>(null);
   const ROLL_FILTER_ALPHA = 0.22; // lower -> smoother, higher -> more responsive
   // Separate, slower filter just for the rim glow opacity. The logic filter
@@ -249,6 +250,7 @@ export default function DonutSelector() {
 
   React.useEffect(() => {
     return tiltStore.subscribe((reading) => {
+      if (Date.now() < backCooldownUntilRef.current) return;
       const isHighMagnitude = reading.magnitude >= MAGNITUDE_ENGAGE;
       const wasHighMagnitude = lastHighMagnitudeRef.current;
       lastHighMagnitudeRef.current = isHighMagnitude;
@@ -289,6 +291,7 @@ export default function DonutSelector() {
               backHoldTimerRef.current = setTimeout(() => {
                 handleBack();
                 backHoldTimerRef.current = null;
+                backCooldownUntilRef.current = Date.now() + 500;
               }, MENU_EXIT_HOLD_MS);
             }
           } else if (backHoldTimerRef.current) {

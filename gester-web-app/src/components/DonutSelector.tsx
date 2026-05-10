@@ -611,26 +611,6 @@ export default function DonutSelector() {
         style={{ width: '460px', height: '460px' }}
       >
       <div
-        className="absolute inset-0 pointer-events-none"
-        style={{
-          background: 'radial-gradient(circle at 0% 50%, rgba(239, 68, 68, 0.65) 0%, rgba(239, 68, 68, 0.18) 28%, transparent 60%)',
-          opacity: enterIntensity,
-          transition: 'opacity 0.12s ease-out',
-          filter: 'blur(6px)',
-          mixBlendMode: 'screen',
-        }}
-      />
-      <div
-        className="absolute inset-0 pointer-events-none"
-        style={{
-          background: 'radial-gradient(circle at 100% 50%, rgba(59, 130, 246, 0.65) 0%, rgba(59, 130, 246, 0.18) 28%, transparent 60%)',
-          opacity: exitIntensity,
-          transition: 'opacity 0.12s ease-out',
-          filter: 'blur(6px)',
-          mixBlendMode: 'screen',
-        }}
-      />
-      <div
         className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 pointer-events-none"
         style={{ opacity: showRectangle ? 0 : 1, transition: 'opacity 0.5s' }}
       >
@@ -666,6 +646,14 @@ export default function DonutSelector() {
           <filter id="glowHover">
             <feGaussianBlur stdDeviation="3" result="coloredBlur"/>
             <feMerge>
+              <feMergeNode in="coloredBlur"/>
+              <feMergeNode in="SourceGraphic"/>
+            </feMerge>
+          </filter>
+          <filter id="rimGlow" x="-50%" y="-50%" width="200%" height="200%">
+            <feGaussianBlur stdDeviation="6" result="coloredBlur"/>
+            <feMerge>
+              <feMergeNode in="coloredBlur"/>
               <feMergeNode in="coloredBlur"/>
               <feMergeNode in="SourceGraphic"/>
             </feMerge>
@@ -732,6 +720,31 @@ export default function DonutSelector() {
             </g>
           );
         })}
+
+        {/* Left rim red glow — sidebar transition cue */}
+        <path
+          d="M 73 73 A 180 180 0 0 0 73 327"
+          fill="none"
+          stroke="#ef4444"
+          strokeWidth={16}
+          strokeLinecap="round"
+          filter="url(#rimGlow)"
+          opacity={enterIntensity}
+          className="pointer-events-none"
+          style={{ transition: 'opacity 0.12s ease-out' }}
+        />
+        {/* Right rim blue glow — return-to-wheel cue */}
+        <path
+          d="M 327 73 A 180 180 0 0 1 327 327"
+          fill="none"
+          stroke="#3b82f6"
+          strokeWidth={16}
+          strokeLinecap="round"
+          filter="url(#rimGlow)"
+          opacity={exitIntensity}
+          className="pointer-events-none"
+          style={{ transition: 'opacity 0.12s ease-out' }}
+        />
 
         <circle
           cx="200"

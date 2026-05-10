@@ -146,6 +146,11 @@ export default function DonutSelector() {
   const backHoldTimerRef = React.useRef<ReturnType<typeof setTimeout> | null>(null);
   const rollFilteredRef = React.useRef<number | null>(null);
   const ROLL_FILTER_ALPHA = 0.22; // lower -> smoother, higher -> more responsive
+  // Separate, slower filter just for the rim glow opacity. The logic filter
+  // (above) is tuned to detect the 50° threshold quickly; the visual filter
+  // is tuned to keep the glow steady so it doesn't flicker frame-to-frame.
+  const rollVisualRef = React.useRef<number | null>(null);
+  const ROLL_VISUAL_ALPHA = 0.08;
   const lastCharIdxRef = React.useRef<number | null>(null);
   const anchoredCharRef = React.useRef<number | null>(null);
   const charAnchorTimerRef = React.useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -253,7 +258,10 @@ export default function DonutSelector() {
         if (rollFilteredRef.current === null) rollFilteredRef.current = roll;
         else rollFilteredRef.current = rollFilteredRef.current * (1 - ROLL_FILTER_ALPHA) + roll * ROLL_FILTER_ALPHA;
         filteredRoll = rollFilteredRef.current as number;
-        setCurrentRoll(filteredRoll);
+
+        if (rollVisualRef.current === null) rollVisualRef.current = roll;
+        else rollVisualRef.current = rollVisualRef.current * (1 - ROLL_VISUAL_ALPHA) + roll * ROLL_VISUAL_ALPHA;
+        setCurrentRoll(rollVisualRef.current);
       }
 
       // Hold positive roll for 2s to enter menu mode (wheel stage only).
@@ -590,16 +598,24 @@ export default function DonutSelector() {
   const activeGroups = splitIntoGroups(activeGroupLetters, 4).filter((group) => group.length > 0);
   const activeGradient = selectedSection !== null ? GRADIENTS[selectedSection] : GRADIENTS[0];
 
-  // Roll-direction glows: only visible in the [MENU_GLOW_START_DEG, |threshold|] window.
+  // Roll-direction glows: ramp from MENU_GLOW_START_DEG up to the threshold,
+  // then stay fully lit while the user holds past it (so the glow doesn't
+  // snap off mid-gesture). Hidden while the gesture isn't applicable.
   const computeRimIntensity = (roll: number, threshold: number) => {
     const sign = Math.sign(threshold) || 1;
     const absRoll = roll * sign;
     const absThreshold = Math.abs(threshold);
-    if (absRoll < MENU_GLOW_START_DEG || absRoll > absThreshold) return 0;
+    if (absRoll < MENU_GLOW_START_DEG) return 0;
+    if (absRoll >= absThreshold) return 1;
     return (absRoll - MENU_GLOW_START_DEG) / (absThreshold - MENU_GLOW_START_DEG);
   };
-  const enterIntensity = showRectangle ? 0 : computeRimIntensity(currentRoll, MENU_ENTER_ROLL_THRESHOLD);
+  // Enter-glow only on the wheel stage (not in rectangle, not already in menu).
+  const enterIntensity = (showRectangle || isMenuMode) ? 0 : computeRimIntensity(currentRoll, MENU_ENTER_ROLL_THRESHOLD);
+  // Exit-glow on the wheel stage AND in menu mode (since rolling left exits the menu).
   const exitIntensity = showRectangle ? 0 : computeRimIntensity(currentRoll, MENU_EXIT_ROLL_THRESHOLD);
+  // Back-gesture intensity: while in the rectangle stage, rolling left builds toward
+  // the back-hold trigger. Lights the Back button blue so the user knows what's about to fire.
+  const backIntensity = showRectangle ? computeRimIntensity(currentRoll, MENU_EXIT_ROLL_THRESHOLD) : 0;
 
   return (
     <div className="min-h-screen w-full bg-linear-to-br from-slate-900 via-slate-800 to-slate-900 relative overflow-hidden">
@@ -849,7 +865,7 @@ export default function DonutSelector() {
           filter="url(#rimGlow)"
           opacity={enterIntensity}
           className="pointer-events-none"
-          style={{ transition: 'opacity 0.12s ease-out' }}
+          style={{ transition: 'opacity 0.25s ease-out' }}
         />
         {/* Right rim blue glow — return-to-wheel cue (sits on sections 0/1, outer=165) */}
         <path
@@ -861,7 +877,7 @@ export default function DonutSelector() {
           filter="url(#rimGlow)"
           opacity={exitIntensity}
           className="pointer-events-none"
-          style={{ transition: 'opacity 0.12s ease-out' }}
+          style={{ transition: 'opacity 0.25s ease-out' }}
         />
 
         {/* Per-section outer/inner outline arcs (replace the old single radius circles) */}
@@ -913,15 +929,21 @@ export default function DonutSelector() {
                 const subgroupSpan = 360 / subgroupCount;
                 const subStart = index * subgroupSpan;
                 const subEnd = subStart + subgroupSpan;
-                const pos = getTextPosition(subStart, subEnd);
+                const subMid = (subStart + subEnd) / 2;
+                // Right-half subgroups shrink to make room for the Back ring on the right.
+                const isRight = subMid < 180;
+                const subOuter = isRight ? 165 : 195;
+                const subInner = 65;
+                const subTextRadius = (subOuter + subInner) / 2;
+                const pos = getTextPosition(subStart, subEnd, subTextRadius);
                 const isHovered = hoveredChar === index;
                 const isAnchored = anchoredChar === index;
-                const borderPath = createBorderPath(subStart, subEnd);
+                const borderPath = createBorderPath(subStart, subEnd, subOuter, subInner);
 
                 return (
                   <g key={index} className="cursor-pointer">
                     <path
-                      d={createDonutPath(subStart, subEnd)}
+                      d={createDonutPath(subStart, subEnd, subOuter, subInner)}
                       fill={isHovered ? 'url(#subgroupHover)' : 'url(#subgroupBase)'}
                       stroke="none"
                       style={{ transition: 'fill 0.3s ease-out' }}
@@ -966,26 +988,81 @@ export default function DonutSelector() {
                 );
               })}
 
-              <circle cx="200" cy="200" r="180" fill="none" stroke="rgba(255, 255, 255, 0.2)" strokeWidth="2" />
-              <circle cx="200" cy="200" r="80" fill="none" stroke="rgba(255, 255, 255, 0.2)" strokeWidth="2" />
+              {/* Per-subgroup outline arcs (replace single-radius circles since right-side is shrunk) */}
+              {activeGroups.map((_, index) => {
+                const subgroupCount = activeGroups.length;
+                const subgroupSpan = 360 / subgroupCount;
+                const subStart = index * subgroupSpan;
+                const subEnd = subStart + subgroupSpan;
+                const subMid = (subStart + subEnd) / 2;
+                const isRight = subMid < 180;
+                const subOuter = isRight ? 165 : 195;
+                return (
+                  <React.Fragment key={`sub-outline-${index}`}>
+                    <path d={createArcPath(subStart, subEnd, subOuter)} fill="none" stroke="rgba(255,255,255,0.2)" strokeWidth="2" className="pointer-events-none" />
+                    <path d={createArcPath(subStart, subEnd, 65)} fill="none" stroke="rgba(255,255,255,0.2)" strokeWidth="2" className="pointer-events-none" />
+                  </React.Fragment>
+                );
+              })}
+
+              {/* Back ring on the right — fills the radial gap left by the shrunk subgroups, lights blue with backIntensity */}
+              {(() => {
+                const subgroupCount = activeGroups.length;
+                const subgroupSpan = 360 / subgroupCount;
+                const rightCount = activeGroups.filter((_, i) => (i + 0.5) * subgroupSpan < 180).length;
+                if (rightCount === 0) return null;
+                const backStart = 0;
+                const backEnd = rightCount * subgroupSpan;
+                const arcInsetDeg = 4;
+                const textArcId = `backArcText-${activeGroupStack.length}`;
+                return (
+                  <g style={{ pointerEvents: 'none' }}>
+                    <path
+                      d={createDonutPath(backStart, backEnd, 195, 165)}
+                      fill={`rgba(59, 130, 246, ${0.10 + backIntensity * 0.45})`}
+                      stroke={`rgba(96, 165, 250, ${0.35 + backIntensity * 0.55})`}
+                      strokeWidth={1 + backIntensity * 1.5}
+                      style={{ transition: 'fill 0.25s ease-out, stroke 0.25s ease-out, stroke-width 0.25s ease-out' }}
+                    />
+                    <path
+                      id={textArcId}
+                      d={createArcPath(backStart + arcInsetDeg, backEnd - arcInsetDeg, 180)}
+                      fill="none"
+                      stroke="none"
+                    />
+                    <text
+                      fontSize="13"
+                      fontWeight="600"
+                      fill={`rgba(255, 255, 255, ${0.55 + backIntensity * 0.45})`}
+                      style={{
+                        letterSpacing: '0.35em',
+                        fontFamily: 'Atkinson Hyperlegible, sans-serif',
+                        transition: 'fill 0.25s ease-out',
+                      }}
+                    >
+                      <textPath href={`#${textArcId}`} startOffset="50%" textAnchor="middle">BACK</textPath>
+                    </text>
+                  </g>
+                );
+              })()}
             </svg>
           </div>
           <button
             onClick={handleBack}
-            className="px-6 py-3 backdrop-blur-md border border-white/40 rounded-lg transition-all duration-300"
+            className="px-6 py-3 backdrop-blur-md border rounded-lg transition-all duration-200"
             style={{
-              background: 'linear-gradient(135deg, rgba(255, 255, 255, 0.15), rgba(255, 255, 255, 0.05))',
-              boxShadow: '0 4px 16px 0 rgba(0, 0, 0, 0.3)',
+              background: backIntensity > 0
+                ? `linear-gradient(135deg, rgba(59, 130, 246, ${0.18 + backIntensity * 0.5}), rgba(99, 102, 241, ${0.10 + backIntensity * 0.4}))`
+                : 'linear-gradient(135deg, rgba(255, 255, 255, 0.15), rgba(255, 255, 255, 0.05))',
+              borderColor: backIntensity > 0
+                ? `rgba(96, 165, 250, ${0.5 + backIntensity * 0.5})`
+                : 'rgba(255, 255, 255, 0.4)',
+              boxShadow: backIntensity > 0
+                ? `0 0 ${16 + backIntensity * 18}px rgba(59, 130, 246, ${0.35 + backIntensity * 0.45}), 0 4px 16px 0 rgba(0, 0, 0, 0.3)`
+                : '0 4px 16px 0 rgba(0, 0, 0, 0.3)',
+              transform: `scale(${1 + backIntensity * 0.05})`,
               fontFamily: 'Atkinson Hyperlegible, sans-serif',
               animation: 'slideIn 0.4s ease-out 0.1s both'
-            }}
-            onMouseEnter={(e) => {
-              e.currentTarget.style.background = 'linear-gradient(135deg, rgba(255, 255, 255, 0.25), rgba(255, 255, 255, 0.15))';
-              e.currentTarget.style.boxShadow = '0 4px 20px 0 rgba(255, 255, 255, 0.2)';
-            }}
-            onMouseLeave={(e) => {
-              e.currentTarget.style.background = 'linear-gradient(135deg, rgba(255, 255, 255, 0.15), rgba(255, 255, 255, 0.05))';
-              e.currentTarget.style.boxShadow = '0 4px 16px 0 rgba(0, 0, 0, 0.3)';
             }}
           >
             <span className="text-white font-medium">Back</span>

@@ -68,6 +68,7 @@ export default function DonutSelector() {
   const [anchoredChar, setAnchoredChar] = React.useState<number | null>(null);
   const [isMenuMode, setIsMenuMode] = React.useState(false);
   const [hoveredMenuButton, setHoveredMenuButton] = React.useState<number | null>(null);
+  const [currentRoll, setCurrentRoll] = React.useState(0);
 
   const showRectangleRef = React.useRef(showRectangle);
   React.useEffect(() => {
@@ -203,6 +204,7 @@ export default function DonutSelector() {
       const wasHighMagnitude = lastHighMagnitudeRef.current;
       lastHighMagnitudeRef.current = isHighMagnitude;
       const roll = reading.roll;
+      if (typeof roll === 'number') setCurrentRoll(roll);
 
       // Hold positive roll for 2s to enter menu mode (wheel stage only).
       if (!menuModeRef.current && !showRectangleRef.current) {
@@ -494,6 +496,14 @@ export default function DonutSelector() {
   const activeGroups = splitIntoGroups(activeGroupLetters, 4).filter((group) => group.length > 0);
   const activeGradient = selectedSection !== null ? GRADIENTS[selectedSection] : GRADIENTS[0];
 
+  // Roll-direction glows: progress toward each threshold, regardless of sign convention.
+  const enterIntensity = showRectangle
+    ? 0
+    : Math.max(0, Math.min(1, currentRoll / MENU_ENTER_ROLL_THRESHOLD));
+  const exitIntensity = showRectangle
+    ? 0
+    : Math.max(0, Math.min(1, currentRoll / MENU_EXIT_ROLL_THRESHOLD));
+
   return (
     <div className="min-h-screen w-full bg-linear-to-br from-slate-900 via-slate-800 to-slate-900 relative overflow-hidden">
       <TiltTelemetry />
@@ -592,6 +602,26 @@ export default function DonutSelector() {
         className="absolute top-1/2 right-8 -translate-y-1/2 z-10"
         style={{ width: '460px', height: '460px' }}
       >
+      <div
+        className="absolute inset-0 pointer-events-none"
+        style={{
+          background: 'radial-gradient(circle at 0% 50%, rgba(239, 68, 68, 0.65) 0%, rgba(239, 68, 68, 0.18) 28%, transparent 60%)',
+          opacity: enterIntensity,
+          transition: 'opacity 0.12s ease-out',
+          filter: 'blur(6px)',
+          mixBlendMode: 'screen',
+        }}
+      />
+      <div
+        className="absolute inset-0 pointer-events-none"
+        style={{
+          background: 'radial-gradient(circle at 100% 50%, rgba(59, 130, 246, 0.65) 0%, rgba(59, 130, 246, 0.18) 28%, transparent 60%)',
+          opacity: exitIntensity,
+          transition: 'opacity 0.12s ease-out',
+          filter: 'blur(6px)',
+          mixBlendMode: 'screen',
+        }}
+      />
       <div
         className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 pointer-events-none"
         style={{ opacity: showRectangle ? 0 : 1, transition: 'opacity 0.5s' }}

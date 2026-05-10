@@ -11,6 +11,7 @@ type TiltReading = {
 type TiltTelemetryProps = {
   onReading?: (r: TiltReading) => void;
 };
+
 function parseTiltPacket(packet: TiltPacket): TiltReading {
   if (packet === null) {
     return { pitch: null, roll: null, magnitude: null };
@@ -108,7 +109,7 @@ export default function TiltTelemetry({ onReading }: TiltTelemetryProps) {
         style={{
           background: 'linear-gradient(135deg, rgba(30, 41, 59, 0.75), rgba(51, 65, 85, 0.45))',
           boxShadow: '0 10px 30px rgba(0, 0, 0, 0.25)',
-          fontFamily: 'Rubik, sans-serif',
+          fontFamily: 'Atkinson Hyperlegible, sans-serif',
         }}
       >
         <div className="flex items-center justify-between gap-3 mb-3">

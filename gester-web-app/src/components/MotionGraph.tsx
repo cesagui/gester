@@ -93,7 +93,7 @@ export default function MotionGraph({ embedded = false }: MotionGraphProps) {
 
       if (!embedded) {
         ctx.fillStyle = 'rgba(255,255,255,0.45)';
-        ctx.font = '10px Rubik, sans-serif';
+        ctx.font = '10px Atkinson Hyperlegible, sans-serif';
         ctx.textAlign = 'right';
         ctx.fillText('roll →', canvasSize - 18, cy - 4);
         ctx.textAlign = 'left';
@@ -163,7 +163,7 @@ export default function MotionGraph({ embedded = false }: MotionGraphProps) {
           background:
             'linear-gradient(135deg, rgba(30, 41, 59, 0.75), rgba(51, 65, 85, 0.45))',
           boxShadow: '0 10px 30px rgba(0, 0, 0, 0.25)',
-          fontFamily: 'Rubik, sans-serif',
+          fontFamily: 'Atkinson Hyperlegible, sans-serif',
         }}
       >
         <div className="flex items-center justify-between mb-2">

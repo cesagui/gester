@@ -23,8 +23,8 @@ const MAGNITUDE_ENGAGE = 400;     // rising-edge: must exceed this to fire a sel
 const REARM_DELAY_MS = 200;       // cooldown after a fire before another select can register
 
 // Sidebar menu mode
-const MENU_ENTER_ROLL_THRESHOLD = 50;
-const MENU_EXIT_ROLL_THRESHOLD = -50;
+const MENU_ENTER_ROLL_THRESHOLD = 45;
+const MENU_EXIT_ROLL_THRESHOLD = -45;
 const MENU_GLOW_START_DEG = 40;   // rim glow begins at this absolute roll, peaks at the threshold, hidden past it
 const MENU_ENTER_HOLD_MS = 2000;
 const MENU_EXIT_HOLD_MS = 1500; // hold duration to trigger "back" when in nested rectangle
@@ -219,7 +219,7 @@ export default function DonutSelector() {
   const rollFilteredRef = React.useRef<number | null>(null);
   const ROLL_FILTER_ALPHA = 0.22; // lower -> smoother, higher -> more responsive
   // Separate, slower filter just for the rim glow opacity. The logic filter
-  // (above) is tuned to detect the 50° threshold quickly; the visual filter
+  // (above) is tuned to detect the 45° threshold quickly; the visual filter
   // is tuned to keep the glow steady so it doesn't flicker frame-to-frame.
   const rollVisualRef = React.useRef<number | null>(null);
   const ROLL_VISUAL_ALPHA = 0.08;
@@ -283,6 +283,7 @@ export default function DonutSelector() {
       clearTimeout(menuEnterTimerRef.current);
       menuEnterTimerRef.current = null;
     }
+    backCooldownUntilRef.current = Date.now() + 500;
   };
 
   const exitMenuMode = () => {
@@ -294,6 +295,7 @@ export default function DonutSelector() {
       clearTimeout(menuEnterTimerRef.current);
       menuEnterTimerRef.current = null;
     }
+    backCooldownUntilRef.current = Date.now() + 500;
   };
 
   const enterSuggestMode = () => {
@@ -327,6 +329,7 @@ export default function DonutSelector() {
       clearTimeout(suggestEnterTimerRef.current);
       suggestEnterTimerRef.current = null;
     }
+    backCooldownUntilRef.current = Date.now() + 500;
   };
 
   const exitSuggestMode = () => {
@@ -337,6 +340,7 @@ export default function DonutSelector() {
       clearTimeout(suggestEnterTimerRef.current);
       suggestEnterTimerRef.current = null;
     }
+    backCooldownUntilRef.current = Date.now() + 500;
   };
 
   const applySuggestion = (word: string) => {
@@ -614,10 +618,17 @@ export default function DonutSelector() {
       const pitch = reading.pitch;
 
       if (Math.abs(pitch) >= WHEEL_DEADZONE_DEG) {
-        // Rest pose sits just before ETAO. Negative pitch advances clockwise
-        // (ETAO → INSH → DLC → RUW); positive pitch goes counter-clockwise.
-        // Both directions wrap.
-        let normalized = (((-pitch) % WHEEL_PITCH_RANGE_DEG) + WHEEL_PITCH_RANGE_DEG) % WHEEL_PITCH_RANGE_DEG;
+        // Two-branch normalization:
+        //   CW  (pitch < 0): subtract deadzone so S0 (ETAO) starts right at the
+        //                    deadzone boundary and gets the same 15° as all others.
+        //   CCW (pitch > 0): no offset so S3 (RUW) is the first section after the
+        //                    deadzone, keeping the wrap ETAO ↔ RUW intact.
+        let normalized: number;
+        if (pitch < 0) {
+          normalized = ((-pitch - WHEEL_DEADZONE_DEG) % WHEEL_PITCH_RANGE_DEG + WHEEL_PITCH_RANGE_DEG) % WHEEL_PITCH_RANGE_DEG;
+        } else {
+          normalized = ((-pitch % WHEEL_PITCH_RANGE_DEG) + WHEEL_PITCH_RANGE_DEG) % WHEEL_PITCH_RANGE_DEG;
+        }
 
         // Find which section's pitch slice contains `normalized`.
         const layout = isNumberModeRef.current ? NUMBER_SECTION_LAYOUT : SECTION_LAYOUT;

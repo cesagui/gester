@@ -345,7 +345,16 @@ export default function DonutSelector() {
 
   const applySuggestion = (word: string) => {
     if (!word) return;
-    setTypedText((prev) => prev.replace(/\S*$/, '') + word + ' ');
+    setTypedText((prev) => {
+      const partial = prev.match(/\S*$/)?.[0] ?? '';
+      // If the suggestion completes the current partial word → replace it.
+      // Otherwise (Claude returned a follow-up word like "cesar" → "salad") → append it.
+      if (partial && word.toLowerCase().startsWith(partial.toLowerCase())) {
+        return prev.slice(0, prev.length - partial.length) + word + ' ';
+      }
+      const sep = prev.length > 0 && !/\s$/.test(prev) ? ' ' : '';
+      return prev + sep + word + ' ';
+    });
   };
 
   const handleBackspace = () => {

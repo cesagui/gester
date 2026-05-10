@@ -1,4 +1,6 @@
 import React from 'react';
+import { FaBackspace } from 'react-icons/fa';
+import { IoIosCloseCircle } from 'react-icons/io';
 import TiltTelemetry from './TiltTelemetry';
 import MotionGraph from './MotionGraph';
 import { tiltStore } from '../lib/tiltStore';
@@ -29,9 +31,9 @@ const ANCHOR_DELAY_MS = 500;
 
 const SECTIONS = [
   { letters: 'ABCDEFG', gradient: 'url(#gradient0)' },
-  { letters: 'HIJKLMN', gradient: 'url(#gradient1)' },
-  { letters: 'OPQRSTU', gradient: 'url(#gradient2)' },
-  { letters: 'VWXYZ.!', gradient: 'url(#gradient3)' }
+  { letters: 'HIJKLM', gradient: 'url(#gradient1)' },
+  { letters: 'NOPQRST', gradient: 'url(#gradient2)' },
+  { letters: 'UVWXYZ', gradient: 'url(#gradient3)' }
 ];
 
 const GRADIENTS = [
@@ -533,12 +535,18 @@ export default function DonutSelector() {
               }
             };
 
+            const getIcon = () => {
+              if (index === 0) return <IoIosCloseCircle size={28} />;
+              if (index === 1) return <FaBackspace size={24} />;
+              return null;
+            };
+
             return (
               <button
                 key={label}
                 type="button"
                 onClick={handleMenuButtonClick}
-                className="w-14 h-14 rounded-lg border text-lg font-semibold text-white/90 transition-all duration-200"
+                className="w-14 h-14 rounded-lg border flex items-center justify-center text-white/90 transition-all duration-200"
                 style={{
                   borderColor: isMenuMode && isHovered ? 'rgba(255,255,255,0.9)' : 'rgba(255,255,255,0.25)',
                   background: isMenuMode && isHovered
@@ -550,7 +558,7 @@ export default function DonutSelector() {
                   transform: isMenuMode && isHovered ? 'scale(1.05)' : 'scale(1)',
                 }}
               >
-                {label}
+                {getIcon() || label}
               </button>
             );
           })}

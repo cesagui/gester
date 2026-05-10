@@ -3,7 +3,8 @@ import TiltTelemetry from './TiltTelemetry';
 import MotionGraph from './MotionGraph';
 import { tiltStore } from '../lib/tiltStore';
 
-const TILT_DEADZONE_DEG = 0;
+const SELECT_GESTURE_MAGNITUDE_THRESHOLD = 750;
+const ANCHOR_DELAY_MS = 500;
 
 export default function DonutSelector() {
   const [hoveredSection, setHoveredSection] = React.useState<number | null>(null);
@@ -16,20 +17,89 @@ export default function DonutSelector() {
     showRectangleRef.current = showRectangle;
   }, [showRectangle]);
 
+  const selectedSectionRef = React.useRef(selectedSection);
+  React.useEffect(() => {
+    selectedSectionRef.current = selectedSection;
+  }, [selectedSection]);
+
+  const openSelectedSection = (index: number) => {
+    setHoveredSection(index);
+    setSelectedSection(index);
+    setShowRectangle(true);
+    setHoveredChar(0); // Reset to first character when opening rectangle
+  };
+
   const lastTiltSectionRef = React.useRef<number | null>(null);
+  const lastHighMagnitudeRef = React.useRef(false);
+  const magnitudeTriggeredRef = React.useRef(false);
+  const anchoredSectionRef = React.useRef<number | null>(null);
+  const sectionStableTimeRef = React.useRef<number | null>(null);
+  const anchorTimerRef = React.useRef<NodeJS.Timeout | null>(null);
   React.useEffect(() => {
     return tiltStore.subscribe((reading) => {
-      if (showRectangleRef.current) return;
+      const isHighMagnitude = reading.magnitude >= SELECT_GESTURE_MAGNITUDE_THRESHOLD;
+      const wasHighMagnitude = lastHighMagnitudeRef.current;
+      lastHighMagnitudeRef.current = isHighMagnitude;
 
-      // Ignore very small pitch values to avoid accidental selection
-      const tiltMag = Math.abs(reading.pitch);
-      if (tiltMag < TILT_DEADZONE_DEG) {
-        if (lastTiltSectionRef.current !== null) {
-          lastTiltSectionRef.current = null;
-          setHoveredSection(null);
+      // Reset magnitude-trigger guard when magnitude falls below threshold
+      if (!isHighMagnitude) {
+        magnitudeTriggeredRef.current = false;
+      }
+
+      // Handle rectangle stage: map roll values to character selection
+      if (showRectangleRef.current) {
+        if (selectedSectionRef.current !== null) {
+          const letters = sections[selectedSectionRef.current].letters;
+          const numChars = letters.length;
+
+          // Map pitch (-90 to 90) to character indices (0 to numChars - 1)
+          const PITCH_MAX = 90;
+          const pitchForChar = reading.pitch;
+            const clampedPitch = Math.max(-PITCH_MAX, Math.min(PITCH_MAX, pitchForChar));
+            const ratio = (clampedPitch + PITCH_MAX) / (2 * PITCH_MAX); // Normalize to 0..1
+            // Use floor mapping for smoother stepping across characters
+            let charIdx = Math.floor(ratio * numChars);
+            if (charIdx >= numChars) charIdx = numChars - 1;
+            const clampedIdx = Math.min(Math.max(charIdx, 0), numChars - 1);
+            setHoveredChar(clampedIdx);
+
+          // (pitch-based confirmation removed) selection now confirmed only by magnitude spike
+
+            // Also confirm selection on a rising-edge magnitude spike (latch until it goes low)
+            if (isHighMagnitude && !wasHighMagnitude && !magnitudeTriggeredRef.current) {
+              magnitudeTriggeredRef.current = true;
+              const selectedChar = letters[clampedIdx];
+              console.log('Selected char (by magnitude):', selectedChar);
+
+              // Return to the wheel UI immediately after selection
+              setShowRectangle(false);
+              setSelectedSection(null);
+              setHoveredSection(null);
+              setHoveredChar(null);
+
+              // Clear any anchored state/timers so wheel behaves normally
+              anchoredSectionRef.current = null;
+              sectionStableTimeRef.current = null;
+              if (anchorTimerRef.current) {
+                clearTimeout(anchorTimerRef.current);
+                anchorTimerRef.current = null;
+              }
+            }
         }
         return;
       }
+
+      // Use rising-edge magnitude to open the rectangle, but only if not already triggered
+      if (isHighMagnitude && !wasHighMagnitude && !magnitudeTriggeredRef.current) {
+        magnitudeTriggeredRef.current = true;
+        const currentSection = lastTiltSectionRef.current;
+        if (currentSection !== null) {
+          openSelectedSection(currentSection);
+        }
+        return;
+      }
+
+      // No deadzone: allow pitch values near zero to map to sections
 
       // Map pitch in the range [0, 90] degrees evenly to the available sections.
       // If pitch is outside this range, don't select any section.
@@ -47,11 +117,41 @@ export default function DonutSelector() {
         if (next >= bins) next = bins - 1;
       }
 
+      // If a section is anchored, only allow leaving it to move to a different section
+      if (anchoredSectionRef.current !== null) {
+        if (next === anchoredSectionRef.current) {
+          // Stay in anchored section, no change needed
+          return;
+        } else {
+          // User tilted enough to leave anchored section
+          anchoredSectionRef.current = null;
+          sectionStableTimeRef.current = null;
+          if (anchorTimerRef.current) clearTimeout(anchorTimerRef.current);
+          // Allow the new section to be set below
+        }
+      }
+
+      // Update section if it changed
       if (next !== lastTiltSectionRef.current) {
         lastTiltSectionRef.current = next;
         setHoveredSection(next);
+        
+        // Reset stable timer on section change
+        sectionStableTimeRef.current = Date.now();
+        if (anchorTimerRef.current) clearTimeout(anchorTimerRef.current);
+        
+        // Set timer to anchor this section after ANCHOR_DELAY_MS
+        anchorTimerRef.current = setTimeout(() => {
+          anchoredSectionRef.current = next;
+        }, ANCHOR_DELAY_MS);
       }
     });
+  }, []);
+
+  React.useEffect(() => {
+    return () => {
+      if (anchorTimerRef.current) clearTimeout(anchorTimerRef.current);
+    };
   }, []);
 
   const sections = [
@@ -133,14 +233,14 @@ export default function DonutSelector() {
   };
 
   const handleSectionClick = (index: number) => {
-    setSelectedSection(index);
-    setShowRectangle(true);
+    openSelectedSection(index);
   };
 
   const handleBack = () => {
     setShowRectangle(false);
     setSelectedSection(null);
     setHoveredSection(null);
+    lastPitchSelectRef.current = false;
   };
 
   return (
@@ -252,15 +352,13 @@ export default function DonutSelector() {
               return (
                 <div
                   key={idx}
-                  className="w-20 h-24 flex items-center justify-center relative"
+                  className="w-20 h-24 flex items-center justify-center relative pointer-events-none"
                   style={{
                     borderRight: idx < sections[selectedSection].letters.length - 1 ? '1px solid rgba(255, 255, 255, 0.2)' : 'none'
                   }}
-                  onMouseEnter={() => setHoveredChar(idx)}
-                  onMouseLeave={() => setHoveredChar(null)}
                 >
                   <div
-                    className="absolute inset-0 pointer-events-none border-2 border-white/60 transition-opacity duration-200"
+                    className="absolute inset-0 pointer-events-none border-4 border-white/90 transition-opacity duration-200 rounded-md"
                     style={{ opacity: isCharHovered ? 1 : 0 }}
                   />
                   <span
